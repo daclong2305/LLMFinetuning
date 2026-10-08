@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "dataset_root": ".runtime/datasets/vitext2sql",
+  "database_dir": ".runtime/datasets/vitext2sql/database",
+  "runs_dir": "reports/experiments",
+  "models": [
+    {"id": "qwen_base", "label": "Qwen2.5-Coder · gốc", "provider": "ollama", "model": "qwen2.5-coder:3b", "base_url": "http://127.0.0.1:11434", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240},
+    {"id": "qwen_ft", "label": "Qwen2.5-Coder · fine-tuned", "provider": "ollama", "model": "qwen2.5-coder-vitext2sql:3b", "base_url": "http://127.0.0.1:11434", "trained": true, "training_manifest": ".runtime/training/qwen-vitext2sql/training_manifest.json", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240},
+    {"id": "gpt", "label": "GPT-4.1 mini · snapshot cố định", "provider": "openai", "model": "gpt-4.1-mini-2025-04-14", "api_key_env": "OPENAI_API_KEY", "base_url": "https://api.openai.com/v1", "max_output_tokens": 2048, "temperature": 0, "timeout_s": 180, "pricing": {"input": 0.40, "cached_input": 0.10, "output": 1.60}, "pricing_date": "2026-10-07"}
+  ],
+  "presets": [
+    {"id": "c0", "label": "C0 · Baseline", "c1": false, "c2": false, "c3": false, "c4": false},
+    {"id": "c2", "label": "C0 + C2", "c1": false, "c2": true, "c3": false, "c4": false},
+    {"id": "c2_c4", "label": "C0 + C2 + C4", "c1": false, "c2": true, "c3": false, "c4": true},
+    {"id": "full", "label": "C1–C4 · Đầy đủ", "c1": true, "c2": true, "c3": true, "c4": true},
+    {"id": "minus_c1", "label": "Đầy đủ − C1", "c1": false, "c2": true, "c3": true, "c4": true},
+    {"id": "minus_c2", "label": "Đầy đủ − C2", "c1": true, "c2": false, "c3": true, "c4": true},
+    {"id": "minus_c3", "label": "Đầy đủ − C3", "c1": true, "c2": true, "c3": false, "c4": true},
+    {"id": "minus_c4", "label": "Đầy đủ − C4", "c1": true, "c2": true, "c3": true, "c4": false}
+  ]
+}

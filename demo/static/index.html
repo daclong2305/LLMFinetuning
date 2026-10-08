@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Query Lab · Text-to-SQL</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <a class="brand" href="/"><span class="brand-icon">Q</span><span>Query Lab<small>NGÔN NGỮ → DỮ LIỆU</small></span></a>
+    <div class="side-label">KHÔNG GIAN THỰC NGHIỆM</div>
+    <div class="nav-active"><span>◈</span> Truy vấn bằng ngôn ngữ tự nhiên</div>
+    <section class="dataset-card"><div class="side-label">CƠ SỞ DỮ LIỆU</div><h2>Retail Analytics</h2><p id="dataset-description">Đang tải dữ liệu…</p><div id="counts" class="counts"></div></section>
+    <div class="side-label">SCHEMA & QUAN HỆ</div><div id="schema" class="schema-list"></div>
+    <div class="sidebar-foot"><span class="live-dot"></span> SQLite · Chỉ đọc<div>Dữ liệu giả lập để minh họa</div></div>
+  </aside>
+  <main>
+    <header class="topbar"><span>Khảo sát LLM-based Text-to-SQL <span class="slash">/</span> Bản minh họa</span><span id="model-status" class="status-pill">Đang kiểm tra model</span></header>
+    <div class="main-content">
+      <div class="eyebrow">TỪ CÂU HỎI ĐẾN CÂU TRẢ LỜI</div><h1>Hỏi dữ liệu.<br><span>Hiểu cách SQL được tạo.</span></h1>
+      <p class="intro">Khám phá cách mô hình ngôn ngữ hiểu schema, sinh truy vấn và sử dụng phản hồi từ cơ sở dữ liệu.</p>
+      <section class="question-card">
+        <div class="section-top"><h2>Câu hỏi của bạn</h2><label class="backend-label">Chế độ <select id="backend"><option value="ollama">Ollama · LLM local</option><option value="offline">Ví dụ offline · không dùng LLM</option></select></label></div>
+        <label class="sr-only" for="question">Nhập câu hỏi dữ liệu</label><textarea id="question" maxlength="2000" rows="3" placeholder="Ví dụ: Top 5 sản phẩm có doanh thu cao nhất"></textarea>
+        <div class="question-bottom"><span>Tiếng Việt hoặc tiếng Anh · Doanh thu tính đơn hoàn tất</span><button id="ask" class="primary">Sinh SQL & xem kết quả <span>→</span></button></div>
+      </section>
+      <div id="notice" class="notice hidden" role="alert"></div>
+      <div class="examples-head">THỬ MỘT CÂU HỎI</div><div id="examples" class="example-list"></div>
+      <section class="techniques"><div class="techniques-heading"><h2>Kỹ thuật trong khảo sát</h2><span>Bật/tắt để quan sát pipeline</span></div><div class="technique-grid">
+        <label class="technique"><input id="few-shot" type="checkbox" checked><span><b>Few-shot prompting</b><small>C2 · Tối đa 2 ví dụ phù hợp schema</small></span></label>
+        <label class="technique"><input id="linking" type="checkbox"><span><b>Schema linking</b><small>C2 · Chọn bảng và giữ đường khóa ngoại</small></span></label>
+        <label class="technique"><input id="repair" type="checkbox" checked><span><b>Execution refinement</b><small>C4 · Sửa tối đa 2 lần khi SQL lỗi</small></span></label>
+      </div></section>
+      <div id="loading" class="loading hidden" role="status"><span class="spinner"></span><span>LLM đang đọc schema và sinh SQL… <small>Lượt đầu cần thời gian nạp model.</small></span></div>
+      <section id="result" class="result hidden" aria-live="polite">
+        <div class="result-heading"><h2>Kết quả truy vấn</h2><span id="result-badge" class="status-pill"></span></div>
+        <div id="metrics" class="metrics"></div>
+        <div class="result-grid"><section class="sql-card"><div class="section-top"><h3>SQL được sinh</h3><button id="copy" class="text-button">Sao chép</button></div><label class="sr-only" for="sql">SQL có thể chỉnh sửa</label><textarea id="sql" rows="10" spellcheck="false"></textarea><p id="explanation" class="explanation"></p><button id="execute" class="secondary">Chạy lại SQL đã sửa →</button></section>
+        <section class="table-card"><div class="section-top"><h3>Dữ liệu trả về</h3><span id="row-count" class="muted"></span></div><div id="table" class="table-wrap"></div><div id="table-note" class="table-note"></div></section></div>
+        <details class="trace-card" open><summary>Luồng xử lý <span id="trace-summary"></span></summary><div id="trace"></div></details>
+        <details class="prompt-card"><summary>Prompt gửi đến model & ví dụ được chọn</summary><pre id="prompt"></pre></details>
+      </section>
+      <footer><b>Mục đích học tập.</b> Minh họa khảo sát “Next-Generation Database Interfaces”. SQL chạy được chưa đảm bảo đúng ý câu hỏi. Đây không phải kết quả benchmark Spider/BIRD hay bản tái lập DAIL-SQL.</footer>
+    </div>
+  </main>
+</div><script src="/app.js"></script>
+</body></html>
