@@ -2,6 +2,22 @@
 
 Hệ thống thực nghiệm trên **ViText2SQL chính thức**: Qwen2.5-Coder gốc, Qwen đã fine-tune riêng và GPT snapshot cố định `gpt-4.1-mini-2025-04-14`. Một pipeline C0–C4 dùng chung cho mọi backend, có so sánh từng câu hỏi và benchmark/ablation. Model hoặc metric chưa đủ điều kiện luôn hiển thị **N/A/chưa sẵn sàng**, không thay bằng kết quả mô phỏng.
 
+## Chạy từ máy mới sau khi clone
+
+Xem [hướng dẫn đầy đủ cho Windows/PowerShell](docs/getting-started.vi.md): cài runtime, tải dữ liệu, tải/import GGUF đã phát hành, cấu hình model, benchmark và xử lý lỗi.
+
+```powershell
+git clone https://github.com/daclong2305/LLMFinetuning.git
+cd LLMFinetuning
+$env:PYTHONUTF8 = '1'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-demo.ps1
+python scripts/prepare_vitext2sql.py --audit
+powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-demo.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start-demo.ps1
+```
+
+Mở http://127.0.0.1:8765 và chạy trước với Qwen base. Cần Python >=3.10 và Git trên PATH; không cần cài thư viện train. Model fine-tuned/dữ liệu không kèm trong Git. Tải bản GGUF đã phát hành tại [zhenlong54/qwen-vitext2sql-3b-GGUF](https://huggingface.co/zhenlong54/qwen-vitext2sql-3b-GGUF) theo bước 6–7 trong hướng dẫn để dùng entry `qwen_public`; chỉ tải GGUF chưa đủ bật entry `qwen_ft` có kiểm tra provenance.
+
 ## Khởi động hệ thống mới
 
 ```powershell
@@ -39,7 +55,7 @@ python scripts/train_qwen.py --prepare-only
 python scripts/train_qwen.py --status
 ```
 
-Exporter đã thực chạy và giữ **6.458 train / 941 dev** sau khi compile target với schema; 373/13 mẫu bị loại có IDs/lý do. Huấn luyện GPU cần môi trường riêng và [requirements-training.txt](requirements-training.txt). CLI hỗ trợ SFT LoRA/QLoRA completion-only, pinned HF revision, seed, giới hạn pilot, merge và đăng ký bằng Ollama portable. Xem toàn bộ lệnh tại [docs/training-qwen.md](docs/training-qwen.md). Model đã fine-tune chưa được tạo trên môi trường hiện tại.
+Exporter đã thực chạy và giữ **6.458 train / 941 dev** sau khi compile target với schema; 373/13 mẫu bị loại có IDs/lý do. Huấn luyện GPU cần môi trường riêng và [requirements-training.txt](requirements-training.txt). CLI hỗ trợ SFT LoRA/QLoRA completion-only, pinned HF revision, seed, giới hạn pilot, merge và đăng ký bằng Ollama portable. Xem toàn bộ lệnh tại [docs/training-qwen.md](docs/training-qwen.md). Model đã fine-tune và manifest không được phân phối cùng Git; máy mới cần tải bản phát hành hoặc tái tạo run trước khi sử dụng.
 
 Khi kết luận tác dụng riêng của fine-tuning, phải xác minh baseline GGUF và model dùng để train có cùng checkpoint gốc/HF revision, template và điều kiện lượng tử hóa. Manifest ghi HF revision, digest/quantization Ollama và settings; nếu chưa xác minh cùng nguồn weights, chỉ diễn giải như so sánh hai cấu hình hệ thống.
 
