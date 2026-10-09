@@ -1,5 +1,6 @@
 """Optional, reproducible completion-only Qwen SFT and provenance validation."""
 import hashlib
+import contextlib
 import importlib.metadata
 import importlib.util
 import json
@@ -124,6 +125,22 @@ def encode_completion(record, tokenizer, max_length=1024):
     return {'input_ids': input_ids, 'attention_mask': [1] * len(input_ids), 'labels': [-100] * len(prompt_ids) + target_ids}
 
 
+def _verified_gguf_export(root, manifest):
+    export = manifest.get('gguf_export')
+    if not isinstance(export, dict) or export.get('source_artifact_files') != manifest.get('artifact_files'):
+        raise ValueError('GGUF export is not tied to these merged weights.')
+    name = export.get('path')
+    if not isinstance(name, str) or not name or export.get('quantization') != 'Q4_K_M':
+        raise ValueError('Invalid GGUF export metadata.')
+    artifact = (root / name).resolve()
+    if not artifact.is_relative_to(root) or artifact.suffix != '.gguf' or not artifact.is_file():
+        raise ValueError('GGUF export is missing or outside the run directory.')
+    with artifact.open('rb') as stream:
+        if stream.read(4) != b'GGUF': raise ValueError('Invalid GGUF export file.')
+    if file_sha256(artifact) != export.get('sha256'): raise ValueError('GGUF export hash mismatch.')
+    return artifact, export
+
+
 def validate_training_manifest(path, model=None):
     path = Path(path)
     if not path.is_file(): raise ValueError('A trained manifest is required.')
@@ -146,11 +163,17 @@ def validate_training_manifest(path, model=None):
         artifact = (root / name).resolve()
         if not artifact.is_relative_to(root) or not artifact.is_file(): raise ValueError('Trained artifact is missing or outside run directory.')
         if file_sha256(artifact) != expected: raise ValueError('Trained artifact hash mismatch.')
+    if manifest.get('gguf_export') is not None:
+        _verified_gguf_export(root, manifest)
     if model is not None:
         registration = manifest.get('registration') or {}
         if (manifest['artifact_kind'] != 'merged' or registration.get('model') != model or not registration.get('digest')
                 or registration.get('artifact_files') != files):
             raise ValueError('Merged trained artifact must be explicitly registered for this model.')
+        if manifest.get('gguf_export') is not None:
+            export = manifest['gguf_export']
+            if registration.get('import_artifact') != {'path': export['path'], 'sha256': export['sha256']}:
+                raise ValueError('Registered model does not match the GGUF export.')
     return manifest
 
 
@@ -292,6 +315,103 @@ def merge_adapter(output_dir):
     return manifest
 
 
+def export_gguf(output_dir, converter=None, quantizer=None):
+    out = Path(output_dir).resolve()
+    lock = out / '.gguf-export.lock'
+    try:
+        stream = lock.open('x', encoding='utf-8')
+    except FileExistsError:
+        raise RuntimeError('GGUF export is already active; inspect the recorded PID before removing a stale lock.') from None
+    try:
+        with stream:
+            json.dump({'pid': os.getpid(), 'created_at': datetime.now(timezone.utc).isoformat()}, stream)
+        return _export_gguf_impl(out, converter, quantizer)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _finish_gguf_export(out, manifest, export, pending, intermediate, partial, target):
+    candidate = target if target.exists() else partial
+    candidate_export = {**export, 'path': candidate.relative_to(out).as_posix()}
+    _verified_gguf_export(out, {**manifest, 'gguf_export': candidate_export})
+    if candidate != target: candidate.replace(target)
+    manifest['gguf_export'] = export
+    manifest.pop('registration', None)
+    _write_json(out / 'training_manifest.json', manifest)
+    for temporary in (pending, intermediate):
+        with contextlib.suppress(OSError): temporary.unlink(missing_ok=True)
+    return export
+
+
+def _export_gguf_impl(output_dir, converter=None, quantizer=None):
+    """Convert already merged weights to F16 GGUF and bounded-buffer Q4_K_M; never train or merge."""
+    out = Path(output_dir).resolve()
+    manifest = validate_training_manifest(out / 'training_manifest.json')
+    if manifest['artifact_kind'] != 'merged': raise ValueError('Merge the adapter before GGUF export.')
+    if manifest.get('gguf_export') is not None:
+        return manifest['gguf_export']
+    gguf_dir = out / 'gguf'; gguf_dir.mkdir(exist_ok=True)
+    if not gguf_dir.resolve().is_relative_to(out): raise ValueError('GGUF output directory is outside the run directory.')
+    intermediate = gguf_dir / 'model-f16.tmp.gguf'
+    partial = gguf_dir / 'model-q4_k_m.tmp.gguf'
+    target = gguf_dir / 'model-q4_k_m.gguf'
+    pending = gguf_dir / 'export-pending.json'
+    if pending.is_file():
+        export = json.loads(pending.read_text(encoding='utf-8'))
+        if export.get('path') != target.relative_to(out).as_posix(): raise ValueError('Invalid pending GGUF export path.')
+        return _finish_gguf_export(out, manifest, export, pending, intermediate, partial, target)
+    project_root = Path(__file__).resolve().parents[2]
+    converter = Path(converter) if converter else project_root / '.runtime/tools/llama.cpp-b4514/convert_hf_to_gguf.py'
+    quantizer = Path(quantizer) if quantizer else project_root / '.runtime/ollama/lib/ollama/llama-quantize.exe'
+    converter, quantizer = converter.resolve(), quantizer.resolve()
+    if not converter.is_file(): raise RuntimeError('llama.cpp converter missing; supply --gguf-converter.')
+    if not quantizer.is_file(): raise RuntimeError('llama-quantize missing; supply --gguf-quantizer.')
+    if target.exists(): raise RuntimeError('Unrecorded GGUF target already exists; preserve it before exporting again.')
+    scratch = gguf_dir / 'tmp'; scratch.mkdir(exist_ok=True)
+    export_env = {**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1',
+                  'TMP': str(scratch), 'TEMP': str(scratch), 'TMPDIR': str(scratch)}
+    source_files = dict(manifest['artifact_files'])
+    tool_hashes = {'converter_sha256': file_sha256(converter), 'quantizer_sha256': file_sha256(quantizer)}
+    try:
+        subprocess.run([sys.executable, str(converter), str(out / 'merged'), '--outfile', str(intermediate),
+                        '--outtype', 'f16', '--use-temp-file'], check=True, env=export_env)
+        subprocess.run([str(quantizer), '--max-buffer-size', '128', str(intermediate), str(partial), 'Q4_K_M', '2'],
+                       check=True, env=export_env)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f'GGUF export failed (exit {exc.returncode}). See converter/quantizer output above.') from None
+    with partial.open('rb') as stream:
+        if stream.read(4) != b'GGUF': raise RuntimeError('Converter did not produce a valid GGUF file.')
+    if validate_training_manifest(out / 'training_manifest.json')['artifact_files'] != source_files:
+        raise ValueError('Merged weights changed during GGUF export.')
+    export_hash = file_sha256(partial)
+    export = {'path': target.relative_to(out).as_posix(), 'sha256': export_hash,
+                               'quantization': 'Q4_K_M', 'source_artifact_files': source_files,
+                               'created_at': datetime.now(timezone.utc).isoformat(), 'intermediate_dtype': 'f16',
+                               'max_buffer_mib': 128, 'quantizer_threads': 2, **tool_hashes}
+    _write_json(pending, export)
+    return _finish_gguf_export(out, manifest, export, pending, intermediate, partial, target)
+
+
+def _created_ollama_identity(create_env, model):
+    store = Path(create_env.get('OLLAMA_MODELS') or Path.home() / '.ollama/models').expanduser().resolve()
+    parts = model.split('/')
+    repository, _, tag = parts[-1].partition(':')
+    tag = tag or 'latest'
+    prefixes = parts[:-1]
+    registry = 'registry.ollama.ai'
+    if prefixes and ('.' in prefixes[0] or ':' in prefixes[0] or prefixes[0] == 'localhost'):
+        registry = prefixes.pop(0)
+    namespace = '/'.join(prefixes) or 'library'
+    path = (store / 'manifests' / registry / namespace / repository / tag).resolve()
+    if not path.is_relative_to(store) or not path.is_file():
+        raise RuntimeError('Created model manifest is missing from the CLI model store; check --ollama-models-dir.')
+    raw = path.read_bytes()
+    data = json.loads(raw)
+    return {'digest': hashlib.sha256(raw).hexdigest(),
+            'model_layers': [layer.get('digest') for layer in data.get('layers', [])
+                             if layer.get('mediaType') == 'application/vnd.ollama.image.model']}
+
+
 def resolve_ollama_executable(explicit=None, project_root=None):
     if explicit:
         path = Path(explicit).expanduser().resolve()
@@ -305,24 +425,55 @@ def resolve_ollama_executable(explicit=None, project_root=None):
     raise RuntimeError('Ollama executable unavailable. Set --ollama-executable or provide .runtime/ollama/ollama.exe; no installation was attempted.')
 
 
-def register_ollama(output_dir, model='qwen2.5-coder-vitext2sql:3b', base_url='http://127.0.0.1:11434', ollama_executable=None):
+def register_ollama(output_dir, model='qwen2.5-coder-vitext2sql:3b', base_url='http://127.0.0.1:11434', ollama_executable=None,
+                    quantization='int4', models_dir=None):
     out = Path(output_dir).resolve(); manifest = validate_training_manifest(out / 'training_manifest.json')
     if manifest['artifact_kind'] != 'merged': raise ValueError('Merge the adapter before Ollama import.')
     if not model or any(ch.isspace() for ch in model) or model.startswith('-'): raise ValueError('Invalid Ollama model name.')
+    if quantization not in ('int4', 'int8', 'nvfp4', 'mxfp4', 'mxfp8', 'q4_K_M'):
+        raise ValueError('Unsupported Ollama quantization choice.')
     executable = resolve_ollama_executable(ollama_executable)
+    export = manifest.get('gguf_export')
+    source = out / export['path'] if export else out / 'merged'
+    if export is None and (source / 'config.json').is_file():
+        architecture = json.loads((source / 'config.json').read_text(encoding='utf-8')).get('architectures', [])
+        if 'Qwen2ForCausalLM' in architecture and quantization in ('int4', 'int8', 'nvfp4', 'mxfp4', 'mxfp8'):
+            raise RuntimeError('Qwen2ForCausalLM is unsupported by this Safetensors/MLX import path. '
+                               'Run --export-gguf first, then --register-ollama to import the verified GGUF.')
     with urllib.request.urlopen(base_url.rstrip('/') + '/api/tags', timeout=5) as response: before = json.load(response)['models']
     modelfile = out / 'Modelfile'
-    modelfile.write_text('FROM "' + (out / 'merged').as_posix() + '"\nPARAMETER temperature 0\nPARAMETER num_ctx 16384\n', encoding='utf-8')
-    subprocess.run([executable, 'create', model, '-f', str(modelfile), '--quantize', 'q4_K_M'], check=True,
-                   env={**os.environ, 'OLLAMA_HOST': base_url})
+    modelfile.write_text('FROM "' + source.as_posix() + '"\nPARAMETER temperature 0\nPARAMETER num_ctx 16384\n', encoding='utf-8')
+    create_env = {**os.environ, 'OLLAMA_HOST': base_url}
+    if models_dir is not None:
+        create_env['OLLAMA_MODELS'] = str(Path(models_dir).expanduser().resolve())
+    else:
+        project_root = Path(__file__).resolve().parents[2]
+        portable = project_root / '.runtime' / 'ollama' / 'ollama.exe'
+        if not create_env.get('OLLAMA_MODELS') and Path(executable).resolve() == portable.resolve():
+            create_env['OLLAMA_MODELS'] = str(project_root / '.runtime' / 'models')
+    try:
+        command = [executable, 'create', model, '-f', str(modelfile)]
+        if export is None: command += ['--quantize', quantization]
+        subprocess.run(command, check=True, env=create_env)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f'Ollama create failed (exit {exc.returncode}). See the Ollama error above. '
+                           'For unsupported MLX architectures, use --export-gguf before registering.') from None
+    created = _created_ollama_identity(create_env, model)
     with urllib.request.urlopen(base_url.rstrip('/') + '/api/tags', timeout=10) as response: after = json.load(response)['models']
     canonical = model if ':' in model else model + ':latest'
     installed = next((item for item in after if item.get('name') in (model, canonical)), None)
     if not installed or not installed.get('digest'): raise RuntimeError('Imported Ollama model could not be verified.')
+    if installed['digest'] != created['digest']:
+        raise RuntimeError('Ollama server does not expose the created model; check that CLI and server use the same model store.')
+    if export and 'sha256:' + export['sha256'] not in created['model_layers']:
+        raise RuntimeError('Created model does not contain the verified GGUF export.')
     base_name = manifest.get('base_ollama_model', 'qwen2.5-coder:3b')
     if any(item.get('name') == base_name and item.get('digest') == installed['digest'] for item in before):
         raise ValueError('Imported digest equals the base model; refusing fine-tuned registration.')
     manifest['registration'] = {'model': model, 'digest': installed['digest'], 'registered_at': datetime.now(timezone.utc).isoformat(),
-                                'artifact_files': manifest['artifact_files'], 'quantization': 'q4_K_M'}
+                                'artifact_files': manifest['artifact_files'],
+                                'quantization': export['quantization'] if export else quantization}
+    if export:
+        manifest['registration']['import_artifact'] = {'path': export['path'], 'sha256': export['sha256']}
     _write_json(out / 'training_manifest.json', manifest)
     return manifest['registration']

@@ -5,7 +5,7 @@
   "runs_dir": "reports/experiments",
   "models": [
     {"id": "qwen_base", "label": "Qwen2.5-Coder · gốc", "provider": "ollama", "model": "qwen2.5-coder:3b", "base_url": "http://127.0.0.1:11434", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240},
-    {"id": "qwen_ft", "label": "Qwen2.5-Coder · fine-tuned", "provider": "ollama", "model": "qwen2.5-coder-vitext2sql:3b", "base_url": "http://127.0.0.1:11434", "trained": true, "training_manifest": ".runtime/training/qwen-vitext2sql/training_manifest.json", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240},
+    {"id": "qwen_ft", "label": "Qwen2.5-Coder · fine-tuned", "provider": "ollama", "model": "qwen2.5-coder-vitext2sql:3b", "base_url": "http://127.0.0.1:11434", "trained": true, "training_manifest": ".runtime/training/qwen-kaggle-merged/qwen-kaggle/training_manifest.json", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240},
     {"id": "gpt", "label": "GPT-4.1 mini · snapshot cố định", "provider": "openai", "model": "gpt-4.1-mini-2025-04-14", "api_key_env": "OPENAI_API_KEY", "base_url": "https://api.openai.com/v1", "max_output_tokens": 2048, "temperature": 0, "timeout_s": 180, "pricing": {"input": 0.40, "cached_input": 0.10, "output": 1.60}, "pricing_date": "2026-10-07"}
   ],
   "presets": [

@@ -1,0 +1,5 @@
+# Optional converter dependencies, in addition to requirements-training.txt.
+# Use the local gguf-py from pinned llama.cpp b4514; do not downgrade torch.
+numpy==1.26.4
+sentencepiece==0.2.0
+protobuf==4.25.8

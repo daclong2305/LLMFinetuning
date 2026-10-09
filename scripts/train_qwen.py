@@ -6,13 +6,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from text2sql_demo.experiment.training import (BASE_MODEL, dependency_diagnostics, prepare_training_data,
-                                               train_qwen, merge_adapter, register_ollama, training_status)
+                                               train_qwen, merge_adapter, export_gguf, register_ollama, training_status)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group(required=True)
-    for action in ('prepare-only', 'train', 'merge', 'register-ollama', 'diagnostics', 'status'):
+    for action in ('prepare-only', 'train', 'merge', 'export-gguf', 'register-ollama', 'diagnostics', 'status'):
         actions.add_argument('--' + action, action='store_true')
     parser.add_argument('--dataset-dir', default='.runtime/datasets/vitext2sql')
     parser.add_argument('--output-dir', default='.runtime/training/qwen-vitext2sql')
@@ -27,6 +27,11 @@ def main(argv=None):
     parser.add_argument('--ollama-model', default='qwen2.5-coder-vitext2sql:3b')
     parser.add_argument('--ollama-url', default='http://127.0.0.1:11434')
     parser.add_argument('--ollama-executable', help='Explicit path to Ollama; default prefers the project portable runtime, then PATH')
+    parser.add_argument('--ollama-quantization', choices=['int4', 'int8', 'nvfp4', 'mxfp4', 'mxfp8', 'q4_K_M'], default='int4',
+                        help='Safetensors import type; int4 for current Ollama, q4_K_M only for older compatible importers')
+    parser.add_argument('--ollama-models-dir', help='Model store used by the running Ollama server; portable default is .runtime/models')
+    parser.add_argument('--gguf-converter', help='Path to llama.cpp convert_hf_to_gguf.py; default .runtime/tools/llama.cpp-b4514')
+    parser.add_argument('--gguf-quantizer', help='Path to llama-quantize; default portable Ollama bundled executable')
     args = parser.parse_args(argv)
     try:
         if args.diagnostics: result = dependency_diagnostics(args.quantization)
@@ -38,7 +43,9 @@ def main(argv=None):
             result = train_qwen(args.output_dir, args.base_model, args.base_revision, args.quantization,
                                 args.epochs, args.max_length, args.seed, max_steps=args.max_steps)
         elif args.merge: result = merge_adapter(args.output_dir)
-        else: result = register_ollama(args.output_dir, args.ollama_model, args.ollama_url, args.ollama_executable)
+        elif args.export_gguf: result = export_gguf(args.output_dir, args.gguf_converter, args.gguf_quantizer)
+        else: result = register_ollama(args.output_dir, args.ollama_model, args.ollama_url, args.ollama_executable,
+                                      quantization=args.ollama_quantization, models_dir=args.ollama_models_dir)
         # Escaped JSON is portable across legacy Windows console encodings.
         print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0

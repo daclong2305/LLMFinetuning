@@ -4,6 +4,8 @@ import json
 import tempfile
 import unittest
 import io
+import subprocess
+import os
 from unittest.mock import patch
 from pathlib import Path
 
@@ -135,10 +137,79 @@ class TrainingTests(unittest.TestCase):
             responses = [io.BytesIO(b'{"models":[]}'), io.BytesIO(b'{"models":[{"name":"custom:3b","digest":"trained"}]}')]
             with patch('text2sql_demo.experiment.training.resolve_ollama_executable', return_value='C:/portable/ollama.exe'), \
                  patch('text2sql_demo.experiment.training.urllib.request.urlopen', side_effect=responses), \
+                 patch('text2sql_demo.experiment.training._created_ollama_identity', return_value={'digest': 'trained', 'model_layers': []}), \
                  patch('text2sql_demo.experiment.training.subprocess.run') as runner:
                 result = register_ollama(out, 'custom:3b')
             self.assertEqual(runner.call_args.args[0][0], 'C:/portable/ollama.exe')
             self.assertEqual(result['digest'], 'trained')
+
+    def test_registration_defaults_to_supported_safetensors_quantization(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp); (out / 'model.safetensors').write_bytes(b'trained')
+            manifest = {'status': 'trained', 'trained_steps': 1, 'trained_splits': ['train'], 'validation_split': 'dev',
+                        'dataset_fingerprint': 'fixed', 'base_model': 'base', 'base_revision': 'revision', 'artifact_kind': 'merged',
+                        'artifact_files': {'model.safetensors': hashlib.sha256(b'trained').hexdigest()}}
+            manifest_path = out / 'training_manifest.json'; manifest_path.write_text(json.dumps(manifest))
+            responses = [io.BytesIO(b'{"models":[]}'), io.BytesIO(b'{"models":[{"name":"custom:3b","digest":"trained"}]}')]
+            def supported_create(command, **kwargs):
+                if command[-1] not in ('int4', 'int8', 'nvfp4', 'mxfp4', 'mxfp8'):
+                    raise subprocess.CalledProcessError(1, command)
+            with patch('text2sql_demo.experiment.training.resolve_ollama_executable', return_value='ollama.exe'), \
+                 patch('text2sql_demo.experiment.training.urllib.request.urlopen', side_effect=responses), \
+                 patch('text2sql_demo.experiment.training._created_ollama_identity', return_value={'digest': 'trained', 'model_layers': []}), \
+                 patch('text2sql_demo.experiment.training.subprocess.run', side_effect=supported_create):
+                result = register_ollama(out, 'custom:3b')
+            self.assertEqual(result['quantization'], 'int4')
+            self.assertEqual(json.loads(manifest_path.read_text())['registration']['quantization'], 'int4')
+
+    def test_cli_can_select_ollama_quantization(self):
+        from scripts.train_qwen import main
+        with patch('sys.stdout', io.StringIO()), patch('scripts.train_qwen.register_ollama', return_value={}) as register:
+            self.assertEqual(main(['--register-ollama', '--ollama-quantization', 'int8',
+                                   '--ollama-models-dir', 'custom-models']), 0)
+        self.assertEqual(register.call_args.kwargs['quantization'], 'int8')
+        self.assertEqual(register.call_args.kwargs['models_dir'], 'custom-models')
+
+    def test_registration_cli_uses_the_server_model_store(self):
+        project_root = Path(__file__).resolve().parents[1]
+        portable = project_root / '.runtime' / 'ollama' / 'ollama.exe'
+        for explicit, inherited, expected in ((None, None, str(project_root / '.runtime' / 'models')),
+                                               (None, 'existing-store', 'existing-store'),
+                                               ('custom-models', 'existing-store', str(Path('custom-models').resolve()))):
+            with self.subTest(explicit=explicit, inherited=inherited), tempfile.TemporaryDirectory() as temp:
+                out = Path(temp); (out / 'model.safetensors').write_bytes(b'trained')
+                manifest = {'status': 'trained', 'trained_steps': 1, 'trained_splits': ['train'], 'validation_split': 'dev',
+                            'dataset_fingerprint': 'fixed', 'base_model': 'base', 'base_revision': 'revision', 'artifact_kind': 'merged',
+                            'artifact_files': {'model.safetensors': hashlib.sha256(b'trained').hexdigest()}}
+                (out / 'training_manifest.json').write_text(json.dumps(manifest))
+                responses = [io.BytesIO(b'{"models":[]}'), io.BytesIO(b'{"models":[{"name":"custom:3b","digest":"trained"}]}')]
+                create_env = {}
+                def create(command, **kwargs):
+                    create_env.update(kwargs['env'])
+                environment = {'OLLAMA_MODELS': inherited} if inherited is not None else {}
+                with patch.dict(os.environ, environment, clear=True), \
+                     patch('text2sql_demo.experiment.training.resolve_ollama_executable', return_value=str(portable)), \
+                     patch('text2sql_demo.experiment.training.urllib.request.urlopen', side_effect=responses), \
+                     patch('text2sql_demo.experiment.training._created_ollama_identity', return_value={'digest': 'trained', 'model_layers': []}), \
+                     patch('text2sql_demo.experiment.training.subprocess.run', side_effect=create):
+                    result = register_ollama(out, 'custom:3b', models_dir=explicit)
+                self.assertEqual(create_env['OLLAMA_MODELS'], expected)
+                self.assertEqual(result['digest'], 'trained')
+
+    def test_failed_create_leaves_manifest_unchanged_and_has_actionable_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp); (out / 'model.safetensors').write_bytes(b'trained')
+            manifest = {'status': 'trained', 'trained_steps': 1, 'trained_splits': ['train'], 'validation_split': 'dev',
+                        'dataset_fingerprint': 'fixed', 'base_model': 'base', 'base_revision': 'revision', 'artifact_kind': 'merged',
+                        'artifact_files': {'model.safetensors': hashlib.sha256(b'trained').hexdigest()}}
+            manifest_path = out / 'training_manifest.json'; manifest_path.write_text(json.dumps(manifest))
+            original = manifest_path.read_bytes()
+            with patch('text2sql_demo.experiment.training.resolve_ollama_executable', return_value='ollama.exe'), \
+                 patch('text2sql_demo.experiment.training.urllib.request.urlopen', return_value=io.BytesIO(b'{"models":[]}')), \
+                 patch('text2sql_demo.experiment.training.subprocess.run', side_effect=subprocess.CalledProcessError(1, ['ollama'])):
+                with self.assertRaisesRegex(RuntimeError, 'Ollama create failed'):
+                    register_ollama(out, 'custom:3b')
+            self.assertEqual(manifest_path.read_bytes(), original)
 
     def test_preparation_rejects_changed_dataset_snapshot(self):
         class Changed(FixtureStore):

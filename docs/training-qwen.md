@@ -51,6 +51,22 @@ After training, `adapter/` contains PEFT adapter weights only. `training_manifes
 
 ## Import into Ollama
 
+For Qwen2 on Ollama 0.35.1, direct Safetensors import takes the MLX path and rejects `Qwen2ForCausalLM`.
+Export the already merged checkpoint to GGUF instead; no training or merge is repeated:
+
+```powershell
+git clone --depth 1 --branch b4514 https://github.com/ggml-org/llama.cpp .runtime/tools/llama.cpp-b4514
+.venv-training\Scripts\python.exe -m pip install -r requirements-gguf.txt
+.venv-training\Scripts\python.exe scripts/train_qwen.py --export-gguf --output-dir .runtime/training/qwen-kaggle-merged/qwen-kaggle
+.venv-training\Scripts\python.exe scripts/train_qwen.py --register-ollama --output-dir .runtime/training/qwen-kaggle-merged/qwen-kaggle --ollama-models-dir .runtime/models
+```
+
+The pinned converter tag resolves to `ec7f3ac9ab33e46b136eb5ab6a76c4d81f57c7f1`. Conversion reads tensors lazily on CPU, uses a disk-backed temporary file and writes an F16 intermediate. The bundled `llama-quantize` then produces `Q4_K_M` with two threads and a 128 MiB tensor-row buffer. This lowers peak memory compared with loading and merging a full FP32 model; it is not a guarantee against system faults. Keep enough RAM and disk available. The intermediate is removed only after successful export.
+
+Export records the GGUF hash, source merged-weight hashes, converter and quantizer hashes, precision and settings in `gguf_export`. Registration verifies those records and imports the GGUF without passing `--quantize`, bypassing MLX. A changed GGUF or changed source weights invalidates availability. A repeat successful export verifies and reuses the recorded file. Safetensors and adapters are retained. The default quantizer is `.runtime/ollama/lib/ollama/llama-quantize.exe`; for Kaggle/Linux, supply the appropriate converter and quantizer through `--gguf-converter` and `--gguf-quantizer`.
+
+An exclusive `.gguf-export.lock` prevents overlapping conversions; inspect the recorded PID before removing a stale lock. Completed conversion is recorded in pending metadata before final publication, so retrying a failed manifest commit verifies and reuses the completed GGUF rather than converting again. Registration compares the CLI-created model manifest's SHA256 with the server's installed model digest, and checks that its model layer is the exported GGUF hash. A same-name model in a different server store cannot satisfy registration.
+
 With Ollama running:
 
 ```powershell
@@ -59,11 +75,13 @@ With Ollama running:
 .venv-training\Scripts\python.exe scripts/train_qwen.py --register-ollama --ollama-executable F:\Tools\ollama.exe
 ```
 
-This explicit action writes a Modelfile pointing to merged Safetensors and invokes `ollama create qwen2.5-coder-vitext2sql:3b --quantize q4_K_M`. It verifies the installed model's digest, refuses a digest equal to the installed base model, and records the exact artifact hashes associated with that digest. Model import support depends on the installed Ollama version; a failure leaves the choice unavailable. No model is pushed or published. See [Ollama's import documentation](https://docs.ollama.com/import).
+This explicit action writes a Modelfile pointing to merged Safetensors and invokes `ollama create qwen2.5-coder-vitext2sql:3b --quantize int4`. Current Ollama Safetensors import accepts `int4`, `int8`, `nvfp4`, `mxfp4` and `mxfp8`; select a type with `--ollama-quantization`. The legacy `q4_K_M` option is only for older compatible importers and is not equivalent to native `int4`. It verifies the installed model's digest, refuses a digest equal to the installed base model, and records the exact artifact hashes associated with that digest and the requested quantization. Model import support depends on the installed Ollama version; a failure leaves the choice unavailable. No model is pushed or published. See [Ollama's import documentation](https://docs.ollama.com/import).
 
 Executable resolution prefers `--ollama-executable`, then the repository's `.runtime/ollama/ollama.exe`, then PATH. An invalid explicit path produces a diagnostic instead of selecting a different executable. No system installation is attempted. Registry metadata includes the installed Ollama model digest and quantization level for reproducibility snapshots.
 
-The registry config entry uses `trained: true`, the same Ollama model name and `training_manifest: .runtime/training/qwen-vitext2sql/training_manifest.json`. Availability requires successful training, train-only provenance, intact saved weights, a merged artifact and the currently installed digest matching registration. Copying or renaming the base model cannot satisfy this workflow. Manifests are local reproducibility records, not signed attestations against a malicious local editor.
+Safetensors creation in current Ollama writes to the CLI's local model store. `--ollama-models-dir` must match the running server's `OLLAMA_MODELS`; otherwise the server may not see a successfully created model. The portable executable defaults to the project's `.runtime/models` when `OLLAMA_MODELS` is unset. CLI create failures return a concise diagnostic and do not update registration metadata.
+
+The registry config entry uses `trained: true`, the same Ollama model name and the manifest path for the actual run. On this machine it is `.runtime/training/qwen-kaggle-merged/qwen-kaggle/training_manifest.json`; a default local training run uses `.runtime/training/qwen-vitext2sql/training_manifest.json`. Availability requires successful training, train-only provenance, intact saved weights, a merged artifact and the currently installed digest matching registration. Copying or renaming the base model cannot satisfy this workflow. Manifests are local reproducibility records, not signed attestations against a malicious local editor.
 
 ## Provider extension
 
