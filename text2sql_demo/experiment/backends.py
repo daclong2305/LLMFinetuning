@@ -21,9 +21,10 @@ def load_local_env(path):
     path = Path(path)
     if not path.is_file(): return
     for line in path.read_text(encoding='utf-8-sig').splitlines():
-        match = re.fullmatch(r'\s*(?:export\s+)?([A-Z][A-Z0-9_]*API_KEY)\s*=\s*(.*?)\s*', line)
+        match = re.fullmatch(r'\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*', line)
         if not match: continue
         name, value = match.groups()
+        if not (name.endswith('API_KEY') or name in {'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE', 'AWS_DEFAULT_REGION', 'AWS_REGION'}): continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
         else:
@@ -117,12 +118,50 @@ class OpenAIBackend(_HTTPBackend):
         return normalized
 
 
+class BedrockBackend(_HTTPBackend):
+    def generate(self, messages):
+        try:
+            import boto3
+            from botocore.config import Config
+            client = boto3.client('bedrock-runtime', region_name=self.config.get('region', 'us-east-1'),
+                config=Config(connect_timeout=10, read_timeout=self.timeout_s, retries={'total_max_attempts': 1}))
+            system = [{'text': m['content']} for m in messages if m['role'] == 'system']
+            conversation = [{'role': m['role'], 'content': [{'text': m['content']}]} for m in messages if m['role'] in ('user', 'assistant')]
+            response = client.converse(modelId=self.model, system=system, messages=conversation,
+                inferenceConfig={'maxTokens': self.config.get('max_output_tokens', 2048), 'temperature': self.config.get('temperature', 0)})
+        except Exception as exc:
+            code = getattr(exc, 'response', {}).get('Error', {}).get('Code', 'connection_or_configuration_error')
+            if not re.fullmatch(r'[A-Za-z0-9_]+', str(code)): code = 'provider_error'
+            raise BackendError('Bedrock request failed: ' + code, normalize_usage({}, self.config), code) from None
+        usage = response.get('usage', {})
+        raw = {'model': self.model, 'id': response.get('ResponseMetadata', {}).get('RequestId'),
+            'usage': {'input_tokens': usage.get('inputTokens'), 'output_tokens': usage.get('outputTokens'),
+                'input_tokens_details': {'cached_tokens': usage.get('cacheReadInputTokens', 0)}}}
+        result = normalize_usage(raw, self.config)
+        result['text'] = ''.join(p['text'] for p in response.get('output', {}).get('message', {}).get('content', []) if isinstance(p.get('text'), str))
+        if response.get('stopReason') not in ('end_turn', 'stop_sequence') or not result['text']:
+            raise BackendError('Bedrock response incomplete or contains no text.', result, 'invalid_response')
+        return result
+
+
+def bedrock_availability(config):
+    try:
+        import boto3
+        credentials = boto3.Session().get_credentials()
+        if credentials is None: return False, 'AWS credentials are not configured locally.'
+        return True, None
+    except ImportError:
+        return False, 'Install requirements-bedrock.txt in the server Python environment.'
+    except Exception:
+        return False, 'AWS credential configuration is unavailable.'
+
+
 class BackendRegistry:
     def __init__(self, config):
         self.config = config
         load_local_env(config.get('env_file', '.env'))
         self.models = {item['id']: dict(item) for item in config.get('models', [])}
-        self.providers = {'ollama': (OllamaBackend, None), 'openai': (OpenAIBackend, None)}
+        self.providers = {'ollama': (OllamaBackend, None), 'openai': (OpenAIBackend, None), 'bedrock': (BedrockBackend, bedrock_availability)}
         if len(self.models) != len(config.get('models', [])): raise ValueError('Duplicate model IDs.')
 
     def register_provider(self, name, factory, availability):

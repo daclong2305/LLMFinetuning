@@ -61,7 +61,7 @@
     const list = presets();
     $("#preset").innerHTML = list.map(preset => `<option value="${safe(preset.id)}">${safe(preset.label || preset.name || preset.id)}</option>`).join("") || '<option value="c0">C0 · Baseline</option>';
     $("#benchmark-presets").innerHTML = list.map((preset, index) => `<label class="check-option"><input class="benchmark-preset" type="checkbox" value="${safe(preset.id)}" ${index === 0 ? "checked" : ""}><span>${safe(preset.label || preset.name || preset.id)}${preset.description ? `<small>${safe(preset.description)}</small>` : ""}</span></label>`).join("");
-    $("#model-setup").innerHTML = '<p>Qwen base: chạy Ollama và tải đúng model đã đăng ký. GPT: thiết lập <code>OPENAI_API_KEY</code> trong môi trường local. Qwen fine-tuned: huấn luyện và đăng ký checkpoint riêng đã có manifest.</p>';
+    $("#model-setup").innerHTML = '<p>Qwen base: chạy Ollama và tải đúng model đã đăng ký. Bedrock: thiết lập <code>AWS_ACCESS_KEY_ID</code> và <code>AWS_SECRET_ACCESS_KEY</code> trong .env local hoặc dùng AWS profile. Qwen fine-tuned: huấn luyện và đăng ký checkpoint riêng đã có manifest.</p>';
     $("#training-info").innerHTML = `<pre>${safe(pretty(info.training || { state: "Chưa có thông tin checkpoint." }))}</pre>`;
     $("#dataset-details").innerHTML = `<details><summary>Phiên bản, kiểm tra split & khả năng thực thi</summary><pre>${safe(pretty(dataset))}</pre></details>`;
     const definitions = info.metric_definitions || [];

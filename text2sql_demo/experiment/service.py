@@ -68,7 +68,7 @@ class ExperimentService:
         self._refresh_credentials()
         trained=next((m for m in self.config.get('models',[]) if m.get('trained')),None)
         status=training_status(trained.get('training_manifest','')) if trained else {'state':'unavailable','reason':'No trained model is configured.'}
-        return {'dataset':self.store.summary(),'models':self.registry.list_models(),'presets':self.config.get('presets',[]),'metric_definitions':METRICS,'training':status,'gpt_snapshot':'gpt-4.1-mini-2025-04-14','method_note':'C1–C4 là module nghiên cứu đại diện; không phải tái lập nguyên bản DIN-SQL/DAIL-SQL.','setup':{'dataset':'python scripts/prepare_vitext2sql.py --audit','training':'python scripts/train_qwen.py --prepare-only','credential':'Tạo .env local từ .env.example hoặc cấu hình biến môi trường cho API. Không gửi khóa trong chat.'}}
+        return {'dataset':self.store.summary(),'models':self.registry.list_models(),'presets':self.config.get('presets',[]),'metric_definitions':METRICS,'training':status,'cloud_model_snapshot':next((m['model'] for m in self.config.get('models',[]) if m['provider']=='bedrock'),None),'method_note':'C1–C4 là module nghiên cứu đại diện; không phải tái lập nguyên bản DIN-SQL/DAIL-SQL.','setup':{'dataset':'python scripts/prepare_vitext2sql.py --audit','training':'python scripts/train_qwen.py --prepare-only','credential':'Tạo .env local từ .env.example hoặc cấu hình biến môi trường cho API. Không gửi khóa trong chat.'}}
 
     def get(self,route,params):
         if route=='/api/experiment/info':
