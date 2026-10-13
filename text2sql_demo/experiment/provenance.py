@@ -80,7 +80,7 @@ def runtime_snapshot():
 
 
 def experiment_snapshot(backend,model_id):
-    allowed=('provider','model','base_url','num_gpu','num_ctx','num_predict','temperature','seed','timeout_s','max_output_tokens','options','pricing','pricing_date','api_key_env')
+    allowed=('provider','model','base_url','region','num_gpu','num_ctx','num_predict','temperature','seed','timeout_s','keep_alive','max_output_tokens','options','pricing','pricing_date','api_key_env')
     config=getattr(backend,'config',{})
     inference={key:config[key] for key in allowed if key in config}
     # Do not include any raw credentials, even from an extension's options.

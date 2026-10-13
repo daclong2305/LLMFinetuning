@@ -101,6 +101,15 @@ def compile_readonly_sql(sql, schema):
         return False,str(exc)
 
 
+def _normalize_inner_joins(sql):
+    """Drop the optional INNER keyword, preserving text and explicit aliases."""
+    pattern = (r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]"
+               r"|--[^\n]*|/\*[\s\S]*?\*/|\bas\s+inner\b"
+               r"|(?P<inner_join>\binner\s+join\b)")
+    return re.sub(pattern, lambda match: 'join' if match.lastgroup == 'inner_join'
+                  else match.group(), sql, flags=re.I)
+
+
 def parse_structural(sql, schema):
     if not isinstance(sql, str) or not sql.strip() or len(sql) > 20000:
         raise ValueError('Empty or overlong SQL')
@@ -111,11 +120,13 @@ def parse_structural(sql, schema):
     mapped = {names[t.casefold()]: [names[c['name'].casefold()] for c in info['columns']]
               for t, info in schema.items()}
     parsed_schema = parser.Schema(mapped)
-    query = _rewrite(sql, schema)
+    # Normalize before implicit aliases: otherwise INNER can be read as an alias.
+    # Other join types retain their semantics and are not coerced to inner joins.
+    query = _normalize_inner_joins(_rewrite(sql, schema))
     # Normalize whitespace around qualification and explicit aliases. Implicit
     # table aliases are rewritten into the AS form required by upstream.
     query = re.sub(r'\s*\.\s*', '.', query)
-    query = re.sub(r'\b(from|join)\s+(u\d+)\s+(?!as\b|where\b|join\b|on\b|group\b|order\b|limit\b|union\b|except\b|intersect\b)([a-zA-Z_]\w*)\b', r'\1 \2 as \3', query, flags=re.I)
+    query = re.sub(r'\b(from|join)\s+(u\d+)\s+(?!as\b|where\b|join\b|inner\b|left\b|right\b|full\b|outer\b|cross\b|natural\b|on\b|group\b|order\b|limit\b|union\b|except\b|intersect\b)([a-zA-Z_]\w*)\b', r'\1 \2 as \3', query, flags=re.I)
     result = parser.get_sql(parsed_schema, query)
     kmap = {}
     # Transitive FK equivalence, consistent with Spider's official policy.
@@ -177,6 +188,8 @@ def execute_full_readonly(path, sql, timeout_s=5, max_rows=100000, max_bytes=16 
 
 
 def _audit_database(path, schema, sample, store, timeout_s):
+    if hasattr(store, 'database_provenance') and store.database_provenance(sample['db_id']).get('synthetic'):
+        return False, 'Synthetic demo database is not eligible for ViText2SQL execution benchmark scores.'
     try:
         assert_frozen_database(path)
     except (ValueError,OSError) as exc:
@@ -448,7 +461,13 @@ def evaluate_prediction(sql, sample, store, timeout_s=5):
             reasons['em'] = reasons['cm'] = 'Gold SQL unsupported by Spider adapter: ' + str(exc)
         if gold is not None:
             if predicted is None:
-                result.update(em=0, cm=0)
+                if result['syntax_valid']:
+                    reasons['em'] = reasons['cm'] = (
+                        'Valid SQL unsupported by Spider adapter; structural score unavailable. '
+                        + reasons['structural_prediction'])
+                else:
+                    # Invalid SQL is a failed prediction, not an adapter coverage gap.
+                    result.update(em=0, cm=0)
             else:
                 evaluator = spider.Evaluator()
                 result['em'] = evaluator.eval_exact_match(copy.deepcopy(predicted), copy.deepcopy(gold))
@@ -466,6 +485,13 @@ def evaluate_prediction(sql, sample, store, timeout_s=5):
     if path is None:
         reasons['ex'] = 'Compatible data-filled SQLite database unavailable.'
         return _optional_metrics(result, sql, sample, store, schema, timeout_s)
+    if hasattr(store, 'database_provenance') and store.database_provenance(sample['db_id']).get('synthetic'):
+        execution = execute_full_readonly(path, executable_sql(sql, schema), timeout_s)
+        result['execution_success'] = execution['complete']
+        result['sql_latency_ms'] = execution['duration_ms']
+        for metric in ('ex', 'ts', 'ves'):
+            reasons[metric] = 'Dữ liệu demo mô phỏng; không chấm điểm benchmark thực thi ViText2SQL gốc.'
+        return result
     qualified, reason = _audit_database(path, schema, sample, store, timeout_s)
     if not qualified:
         reasons['ex'] = reason

@@ -14,8 +14,8 @@ from .training import training_status
 
 
 METRICS=[
-    {'id':'em','label':'EM','description':'Exact Set Match theo Spider: cấu trúc SQL, bỏ giá trị literal và DISTINCT theo chính sách evaluator gốc. Không phải so chuỗi.'},
-    {'id':'cm','label':'CM / F1','description':'Trung bình F1 các thành phần SQL có mặt; có breakdown SELECT/WHERE/GROUP/ORDER/KEYWORDS và thành phần phụ của Spider.'},
+    {'id':'em','label':'EM','description':'Exact Set Match theo Spider: cấu trúc SQL, bỏ giá trị literal và DISTINCT theo chính sách evaluator gốc. Không phân biệt hoa/thường; INNER JOIN tương đương JOIN. COUNT(cột) và COUNT(*) vẫn khác cấu trúc. SQL hợp lệ nhưng adapter chưa hỗ trợ: N/A; SQL không hợp lệ: 0 khi có tham chiếu chấm được.'},
+    {'id':'cm','label':'CM / F1','description':'Trung bình F1 các thành phần SQL có mặt; có breakdown SELECT/WHERE/GROUP/ORDER/KEYWORDS và thành phần phụ của Spider. HAVING được tính trong group. SQL hợp lệ nhưng adapter chưa hỗ trợ: N/A, không gán 0 cho toàn bộ thành phần.'},
     {'id':'ex','label':'EX','description':'Kết quả SQL khớp gold trên database đầy đủ đã audit. Giữ duplicate và thứ tự khi gold có ORDER BY; không dùng preview 200 dòng.'},
     {'id':'ts','label':'TS','description':'Test Suite Accuracy: so kết quả trên nhiều database tương thích. N/A khi chưa có test suite đã xác minh.'},
     {'id':'ves','label':'VES','description':'Điểm kết hợp SQL đúng và hiệu quả thực thi tương đối với gold. Cần database và đo lặp ổn định, không dùng độ trễ LLM thay thế.'},
@@ -67,8 +67,8 @@ class ExperimentService:
     def info(self):
         self._refresh_credentials()
         trained=next((m for m in self.config.get('models',[]) if m.get('trained')),None)
-        status=training_status(trained.get('training_manifest','')) if trained else {'state':'unavailable','reason':'No trained model is configured.'}
-        return {'dataset':self.store.summary(),'models':self.registry.list_models(),'presets':self.config.get('presets',[]),'metric_definitions':METRICS,'training':status,'cloud_model_snapshot':next((m['model'] for m in self.config.get('models',[]) if m['provider']=='bedrock'),None),'method_note':'C1–C4 là module nghiên cứu đại diện; không phải tái lập nguyên bản DIN-SQL/DAIL-SQL.','setup':{'dataset':'python scripts/prepare_vitext2sql.py --audit','training':'python scripts/train_qwen.py --prepare-only','credential':'Tạo .env local từ .env.example hoặc cấu hình biến môi trường cho API. Không gửi khóa trong chat.'}}
+        status=training_status(trained.get('training_manifest',''), hash_cache=self.registry.artifact_hash_cache) if trained else {'state':'unavailable','reason':'No trained model is configured.'}
+        return {'dataset':self.store.summary(),'models':self.registry.list_models(),'presets':self.config.get('presets',[]),'metric_definitions':METRICS,'training':status,'cloud_models':[{'id':m['id'],'provider':m['provider'],'model':m['model']} for m in self.config.get('models',[]) if m['provider']!='ollama'],'method_note':'C1–C4 là module nghiên cứu đại diện; không phải tái lập nguyên bản DIN-SQL/DAIL-SQL.','setup':{'dataset':'python scripts/prepare_vitext2sql.py --audit','training':'python scripts/train_qwen.py --prepare-only','credential':'Tạo .env local từ .env.example hoặc cấu hình biến môi trường cho API. Không gửi khóa trong chat.'}}
 
     def get(self,route,params):
         if route=='/api/experiment/info':
@@ -117,7 +117,7 @@ class ExperimentService:
                     raise ValueError('Câu hỏi cần từ 1 đến 2.000 ký tự và database hợp lệ.')
                 self.store.schema(db)
                 sample={'id':'custom:'+uuid.uuid4().hex,'split':'custom','db_id':db,'question':question.strip(),'gold_sql':None,'difficulty':'unknown'}
-            backends={m:self.registry.create(m) for m in model_ids}
+            backends={m:self.registry.create(m, verify_artifacts=False) for m in model_ids}
             if not self.inference_lock.acquire(blocking=False):
                 return {'error':'Model đang xử lý truy vấn/benchmark. Đợi hoàn tất rồi thử lại.'},409
             try:

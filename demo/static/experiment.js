@@ -55,15 +55,19 @@
     $("#model-cards").innerHTML = models.length ? models.map(model => {
       const ready = model.available === true;
       const trained = ready && model.trained === true;
-      return `<label class="model-card ${ready ? "selected" : "unavailable"}"><input class="compare-model" type="checkbox" value="${safe(model.id)}" ${ready ? "checked" : "disabled"} aria-label="Chọn ${safe(model.label || model.id)}"><span class="model-body"><b>${safe(model.label || model.id)}</b><span class="model-name">${safe(model.model || model.id)}</span><span class="model-row"><span class="provider">${safe(model.provider || "Adapter")} ${trained ? "· checkpoint xác minh" : ""}</span><span class="badge ${ready ? "" : "warn"}">${ready ? "Sẵn sàng" : "Chưa sẵn sàng"}</span></span>${!ready ? `<span class="model-reason">${safe(model.reason || "Chưa đáp ứng điều kiện suy luận.")}</span>` : ""}</span></label>`;
+      const initial = ready && model.id === available[0]?.id;
+      return `<label class="model-card ${initial ? "selected" : ready ? "" : "unavailable"}"><input class="compare-model" type="checkbox" value="${safe(model.id)}" ${initial ? "checked" : ready ? "" : "disabled"} aria-label="Chọn ${safe(model.label || model.id)}"><span class="model-body"><b>${safe(model.label || model.id)}</b><span class="model-name">${safe(model.model || model.id)}</span><span class="model-row"><span class="provider">${safe(model.provider || "Adapter")} ${trained ? "· checkpoint xác minh" : ""}</span><span class="badge ${ready ? "" : "warn"}">${ready ? "Sẵn sàng" : "Chưa sẵn sàng"}</span></span>${!ready ? `<span class="model-reason">${safe(model.reason || "Chưa đáp ứng điều kiện suy luận.")}</span>` : ""}</span></label>`;
     }).join("") : '<p class="muted">Chưa đăng ký mô hình. Thêm cấu hình để bắt đầu.</p>';
     $("#benchmark-models").innerHTML = models.map(model => `<label class="check-option"><input class="benchmark-model" type="checkbox" value="${safe(model.id)}" ${model.available === true ? "checked" : "disabled"}><span>${safe(model.label || model.id)}<small>${safe(model.available === true ? model.model || model.provider : model.reason || "Chưa sẵn sàng")}</small></span></label>`).join("");
     const list = presets();
     $("#preset").innerHTML = list.map(preset => `<option value="${safe(preset.id)}">${safe(preset.label || preset.name || preset.id)}</option>`).join("") || '<option value="c0">C0 · Baseline</option>';
     $("#benchmark-presets").innerHTML = list.map((preset, index) => `<label class="check-option"><input class="benchmark-preset" type="checkbox" value="${safe(preset.id)}" ${index === 0 ? "checked" : ""}><span>${safe(preset.label || preset.name || preset.id)}${preset.description ? `<small>${safe(preset.description)}</small>` : ""}</span></label>`).join("");
-    $("#model-setup").innerHTML = '<p>Qwen base: chạy Ollama và tải đúng model đã đăng ký. Bedrock: thiết lập <code>AWS_ACCESS_KEY_ID</code> và <code>AWS_SECRET_ACCESS_KEY</code> trong .env local hoặc dùng AWS profile. Qwen fine-tuned: huấn luyện và đăng ký checkpoint riêng đã có manifest.</p>';
+    $("#model-setup").innerHTML = '<p>Mặc định chọn một model để demo nhanh. Tích thêm model khi cần so sánh; các model chạy lần lượt.</p><p>Qwen base: chạy Ollama và tải đúng model đã đăng ký. Claude Haiku 4.5: thiết lập thông tin AWS và region trong <code>.env</code> (hoặc <code>env</code>), tài khoản cần quyền gọi model trên Amazon Bedrock. Qwen fine-tuned: huấn luyện và đăng ký checkpoint riêng đã có manifest.</p>';
     $("#training-info").innerHTML = `<pre>${safe(pretty(info.training || { state: "Chưa có thông tin checkpoint." }))}</pre>`;
     $("#dataset-details").innerHTML = `<details><summary>Phiên bản, kiểm tra split & khả năng thực thi</summary><pre>${safe(pretty(dataset))}</pre></details>`;
+    const demoDatabases = dataset.demo_databases || [];
+    $("#database-demo-status").hidden = !demoDatabases.length;
+    $("#database-demo-status").textContent = `SQLite demo đã kết nối: ${demoDatabases.join(", ")}. Chọn mẫu thuộc database này để xem dữ liệu mô phỏng. EX/TS/VES vẫn là N/A.`;
     const definitions = info.metric_definitions || [];
     const entries = Array.isArray(definitions) ? definitions : Object.entries(definitions).map(([id, definition]) => ({ id, ...(typeof definition === "object" ? definition : { description: definition }) }));
     $("#metric-definitions").innerHTML = entries.length ? entries.map(definition => `<div class="metric-definition"><strong>${safe((definition.id || definition.key || definition.name || "").toUpperCase())}</strong><p>${safe(definition.description || definition.definition || definition.label || "")}${definition.requires ? `<br><span class="muted">Điều kiện: ${safe(pretty(definition.requires))}</span>` : ""}</p></div>`).join("") : '<p>EM: khớp cấu trúc SQL. CM: F1 thành phần SQL. EX: so sánh toàn bộ kết quả thực thi. TS: test-suite accuracy. VES: độ chính xác có xét hiệu quả thực thi.</p>';
@@ -132,6 +136,10 @@
     return typeof reasons === "string" ? reasons : reasons[key] || reasons.evaluation || "Chưa có phép đo hoặc tài sản đánh giá phù hợp.";
   };
   function executionView(execution) {
+    const note = execution?.synthetic ? `<p class="tiny-note"><span class="badge warn">Dữ liệu demo</span> ${safe(execution.note)}</p>` : "";
+    return note + executionBody(execution);
+  }
+  function executionBody(execution) {
     if (!execution) return '<p class="muted">Chưa có kết quả thực thi. EX yêu cầu database SQLite có dữ liệu phù hợp.</p>';
     if (execution.error) return `<p class="result-error">${safe(execution.error)}</p>`;
     if (execution.mode === "schema_only" || execution.status === "schema_only") return `<p class="muted">${safe(execution.note || "Chỉ xác thực cú pháp/schema. Chưa có database chứa dữ liệu để trả kết quả hoặc đo EX.")}</p>`;
@@ -176,8 +184,10 @@
     if ($("#compare-button").disabled) return;
     state.busy = true;
     updateButtons();
-    $("#compare-button").textContent = "Đang suy luận…";
-    $("#compare-button").classList.add("loading-pulse");
+    $("#compare-button").innerHTML = '<span class="spinner" aria-hidden="true"></span> Đang so sánh…';
+    $("#compare-button").setAttribute("aria-busy", "true");
+    $("#compare-loading").hidden = false;
+    $("#compare-results").setAttribute("aria-busy", "true");
     notice($("#compare-status"), "Các mô hình đang xử lý cùng câu hỏi. Thời gian chạy phụ thuộc mô hình và C1–C4.");
     const body = { model_ids: selected(".compare-model"), options: options() };
     if (state.source === "dataset") body.sample_id = currentSample().id;
@@ -188,7 +198,14 @@
       const errors = (data.results || []).filter(result => !["ok", "success", "completed", "complete"].includes(result.status)).length;
       notice($("#compare-status"), `Đã nhận ${data.results?.length || 0} kết quả${errors ? ` · ${errors} mô hình có lỗi hoặc chưa hoàn tất` : ""}. Run ${data.id || ""}`);
     } catch (error) { notice($("#compare-status"), `Không thể so sánh: ${error.message}`, true); }
-    finally { state.busy = false; $("#compare-button").innerHTML = 'Chạy so sánh <span aria-hidden="true">→</span>'; $("#compare-button").classList.remove("loading-pulse"); updateButtons(); }
+    finally {
+      state.busy = false;
+      $("#compare-button").innerHTML = 'Chạy so sánh <span aria-hidden="true">→</span>';
+      $("#compare-button").setAttribute("aria-busy", "false");
+      $("#compare-loading").hidden = true;
+      $("#compare-results").setAttribute("aria-busy", "false");
+      updateButtons();
+    }
   }
   function downloadJson(data, filename) {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });

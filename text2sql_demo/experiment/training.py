@@ -11,6 +11,7 @@ import sqlite3
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,38 @@ def file_sha256(path):
     with Path(path).open('rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''): digest.update(block)
     return digest.hexdigest()
+
+
+class ArtifactHashCache:
+    """Session-only fast checks for local demo files; strict validation bypasses this.
+
+    Metadata is an invalidation hint, not a cryptographic proof that a file has
+    not changed. Training/export and benchmark entry points still hash all bytes.
+    """
+    def __init__(self):
+        self._entries = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _signature(path):
+        stat = path.stat()
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    def __call__(self, path):
+        path = Path(path).resolve()
+        with self._lock:
+            before = self._signature(path)
+            cached = self._entries.get(path)
+            if cached is not None and cached[0] == before:
+                return cached[1]
+            self._entries.pop(path, None)
+            digest = file_sha256(path)
+            if self._signature(path) != before:
+                raise ValueError('Artifact changed during hash verification; retry after writes finish.')
+            if len(self._entries) >= 128:
+                self._entries.pop(next(iter(self._entries)))
+            self._entries[path] = (before, digest)
+            return digest
 
 
 def dependency_diagnostics(quantization='qlora'):
@@ -125,7 +158,7 @@ def encode_completion(record, tokenizer, max_length=1024):
     return {'input_ids': input_ids, 'attention_mask': [1] * len(input_ids), 'labels': [-100] * len(prompt_ids) + target_ids}
 
 
-def _verified_gguf_export(root, manifest):
+def _verified_gguf_export(root, manifest, hash_cache=None):
     export = manifest.get('gguf_export')
     if not isinstance(export, dict) or export.get('source_artifact_files') != manifest.get('artifact_files'):
         raise ValueError('GGUF export is not tied to these merged weights.')
@@ -137,11 +170,11 @@ def _verified_gguf_export(root, manifest):
         raise ValueError('GGUF export is missing or outside the run directory.')
     with artifact.open('rb') as stream:
         if stream.read(4) != b'GGUF': raise ValueError('Invalid GGUF export file.')
-    if file_sha256(artifact) != export.get('sha256'): raise ValueError('GGUF export hash mismatch.')
+    if (hash_cache or file_sha256)(artifact) != export.get('sha256'): raise ValueError('GGUF export hash mismatch.')
     return artifact, export
 
 
-def validate_training_manifest(path, model=None):
+def validate_training_manifest(path, model=None, *, hash_cache=None):
     path = Path(path)
     if not path.is_file(): raise ValueError('A trained manifest is required.')
     try: manifest = json.loads(path.read_text(encoding='utf-8'))
@@ -158,13 +191,13 @@ def validate_training_manifest(path, model=None):
         raise ValueError('Trained weight artifact files are required.')
     root = path.parent.resolve()
     if manifest.get('data_files') is not None:
-        _verified_data(root)
+        _verified_data(root, hash_cache=hash_cache)
     for name, expected in files.items():
         artifact = (root / name).resolve()
         if not artifact.is_relative_to(root) or not artifact.is_file(): raise ValueError('Trained artifact is missing or outside run directory.')
-        if file_sha256(artifact) != expected: raise ValueError('Trained artifact hash mismatch.')
+        if (hash_cache or file_sha256)(artifact) != expected: raise ValueError('Trained artifact hash mismatch.')
     if manifest.get('gguf_export') is not None:
-        _verified_gguf_export(root, manifest)
+        _verified_gguf_export(root, manifest, hash_cache=hash_cache)
     if model is not None:
         registration = manifest.get('registration') or {}
         if (manifest['artifact_kind'] != 'merged' or registration.get('model') != model or not registration.get('digest')
@@ -177,10 +210,10 @@ def validate_training_manifest(path, model=None):
     return manifest
 
 
-def training_status(path):
+def training_status(path, *, hash_cache=None):
     result = {'state': 'unavailable', 'ready': False, 'reason': 'No trained artifact is available.', 'dependencies': dependency_diagnostics()}
     try:
-        manifest = validate_training_manifest(path)
+        manifest = validate_training_manifest(path, hash_cache=hash_cache)
         result.update(state='trained', ready=True, reason=None, artifact_kind=manifest['artifact_kind'],
                       trained_steps=manifest['trained_steps'], dataset_fingerprint=manifest['dataset_fingerprint'],
                       registration=manifest.get('registration'))
@@ -192,14 +225,14 @@ def training_status(path):
     return result
 
 
-def _verified_data(out):
+def _verified_data(out, hash_cache=None):
     manifest = json.loads((out / 'training_manifest.json').read_text(encoding='utf-8'))
     if manifest.get('trained_splits') != ['train'] or manifest.get('validation_split') != 'dev' or manifest.get('test_used'):
         raise ValueError('Invalid data provenance.')
     if manifest.get('data_snapshot_sha256') != _snapshot_fingerprint(manifest):
         raise ValueError('Prepared data snapshot provenance mismatch; prepare a verified export first.')
     for name in ('train.jsonl', 'dev.jsonl'):
-        if file_sha256(out / name) != manifest.get('data_files', {}).get(name): raise ValueError('Prepared data hash mismatch.')
+        if (hash_cache or file_sha256)(out / name) != manifest.get('data_files', {}).get(name): raise ValueError('Prepared data hash mismatch.')
     return manifest
 
 

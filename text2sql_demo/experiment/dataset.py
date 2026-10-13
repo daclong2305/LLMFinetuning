@@ -2,6 +2,8 @@
 import hashlib
 import json
 import re
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from .provenance import file_hash,evaluator_fingerprint
 
@@ -33,6 +35,7 @@ class DatasetStore:
         self._tables = {}
         self._database_snapshots = {}
         self._database_errors = {}
+        self._demo_databases = {}
         self._snapshot_loading = True
         self._suite = {}
         self._suite_reason = 'Validated test-suite manifest unavailable.'
@@ -102,7 +105,27 @@ class DatasetStore:
                 database_hashes[db] = digest.hexdigest()
                 stat = path.stat()
                 self._database_snapshots[db] = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, database_hashes[db])
+                try:
+                    with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as con:
+                        if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='__visql_demo'").fetchone():
+                            self._demo_databases[db] = {'synthetic': True,
+                                'note': 'Dữ liệu mô phỏng để demo ViSQL; EX/TS/VES không được chấm trên dữ liệu này.'}
+                            for name, table in self._schemas[db].items():
+                                values = {}
+                                for column in table['columns']:
+                                    if column['type'] != 'TEXT' or column['pk']:
+                                        continue
+                                    identifier = quote_identifier(column['name'])
+                                    rows = con.execute('SELECT DISTINCT ' + identifier + ' FROM ' +
+                                        quote_identifier(name) + ' WHERE ' + identifier + ' IS NOT NULL LIMIT 7').fetchall()
+                                    if 0 < len(rows) <= 6 and all(isinstance(r[0], str) and len(r[0]) <= 80 for r in rows):
+                                        values[column['name']] = [r[0] for r in rows]
+                                if values:
+                                    table['description'] = 'Giá trị đang có trong dữ liệu demo (giữ nguyên khi lọc): ' + json.dumps(values, ensure_ascii=False)
+                except sqlite3.Error as exc:
+                    self._database_errors[db] = 'SQLite database unreadable: ' + str(exc)
         self._snapshot_loading = False
+        self._summary['demo_databases'] = sorted(self._demo_databases)
         self._summary['database_errors'] = dict(self._database_errors)
         self._summary['database_hashes'] = database_hashes
         if database_hashes:
@@ -249,6 +272,9 @@ class DatasetStore:
         if db_id not in self._schemas:
             raise KeyError('Unknown dataset database')
         return json.loads(json.dumps(self._schemas[db_id]))
+
+    def database_provenance(self, db_id):
+        return dict(self._demo_databases.get(db_id, {}))
 
     def _find_database(self, db_id):
         if db_id not in self._schemas:

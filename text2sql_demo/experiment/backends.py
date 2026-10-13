@@ -1,12 +1,14 @@
-"""Configurable inference adapters; core runtime has no third-party dependencies."""
+"""Configurable inference adapters; only Bedrock requires the optional AWS SDK."""
+import importlib.util
 import json
+import math
 import os
 import re
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .training import validate_training_manifest
+from .training import ArtifactHashCache, validate_training_manifest
 
 
 class BackendError(RuntimeError):
@@ -17,14 +19,19 @@ class BackendError(RuntimeError):
 
 
 def load_local_env(path):
-    """Read only API-key assignments, without interpolation or executing shell syntax."""
+    """Read credential/config assignments without interpolation or shell execution."""
     path = Path(path)
+    if not path.is_file() and path.name == '.env':
+        path = path.with_name('env')
     if not path.is_file(): return
+    aws_names = {'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+                 'AWS_DEFAULT_REGION', 'AWS_REGION', 'AWS_PROFILE', 'AWS_BEARER_TOKEN_BEDROCK'}
     for line in path.read_text(encoding='utf-8-sig').splitlines():
+        match = re.fullmatch(r'\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*', line)
         match = re.fullmatch(r'\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*', line)
         if not match: continue
         name, value = match.groups()
-        if not (name.endswith('API_KEY') or name in {'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE', 'AWS_DEFAULT_REGION', 'AWS_REGION'}): continue
+        if name not in aws_names and not name.endswith('API_KEY'): continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
         else:
@@ -42,6 +49,24 @@ def normalize_usage(result, config):
     if provider == 'ollama':
         incoming, outgoing, cached = _count(result.get('prompt_eval_count')), _count(result.get('eval_count')), 0
         cost = 0.0
+    elif provider == 'bedrock':
+        uncached = _count(usage.get('inputTokens'))
+        outgoing = _count(usage.get('outputTokens'))
+        cached = _count(usage.get('cacheReadInputTokens', 0)) if usage else None
+        written = _count(usage.get('cacheWriteInputTokens', 0)) if usage else None
+        incoming = uncached + cached + written if all(v is not None for v in (uncached, cached, written)) else None
+        rates = config.get('pricing', {})
+        cost = None
+        keys = ['input', 'output'] + (['cached_input'] if cached else []) + (['cache_write'] if written else [])
+        # This adapter does not request prompt caching. If AWS reports writes,
+        # account for the default 5m rate; unknown TTLs/rates stay unavailable.
+        details = usage.get('cacheDetails', [])
+        known_ttl = isinstance(details, list) and all(isinstance(d, dict) and d.get('ttl') == '5m' for d in details)
+        if incoming is not None and outgoing is not None and known_ttl and all(
+                type(rates.get(k)) in (int, float) and math.isfinite(rates[k]) and rates[k] >= 0 for k in keys):
+            cost = (uncached * rates['input'] + outgoing * rates['output']
+                    + (cached * rates['cached_input'] if cached else 0)
+                    + (written * rates['cache_write'] if written else 0)) / 1_000_000
     else:
         incoming, outgoing = _count(usage.get('input_tokens')), _count(usage.get('output_tokens'))
         details = usage.get('input_tokens_details') if isinstance(usage.get('input_tokens_details'), dict) else {}
@@ -52,7 +77,8 @@ def normalize_usage(result, config):
             if all(isinstance(rates.get(key), (int, float)) and rates[key] >= 0 for key in ('input', 'cached_input', 'output')):
                 cost = ((incoming - cached) * rates['input'] + cached * rates['cached_input'] + outgoing * rates['output']) / 1_000_000
     return {'text': '', 'input_tokens': incoming, 'output_tokens': outgoing, 'cached_input_tokens': cached,
-            'cost_usd': cost, 'model': result.get('model', config['model']), 'response_id': result.get('id')}
+            'cost_usd': cost, 'model': result.get('model', config['model']),
+            'response_id': result.get('id') or (result.get('ResponseMetadata') or {}).get('RequestId')}
 
 
 class _HTTPBackend:
@@ -88,6 +114,8 @@ class OllamaBackend(_HTTPBackend):
         options.update({name: self.config[name] for name in options if name in self.config})
         options.update(self.config.get('options', {}))
         body = {'model': self.model, 'messages': messages, 'stream': False, 'format': 'json', 'options': options}
+        if 'keep_alive' in self.config:
+            body['keep_alive'] = self.config['keep_alive']
         result = self._request(self.config.get('base_url', 'http://127.0.0.1:11434').rstrip('/') + '/api/chat', body)
         normalized = normalize_usage(result, self.config)
         message = result.get('message') or {}
@@ -118,42 +146,84 @@ class OpenAIBackend(_HTTPBackend):
         return normalized
 
 
+def _bedrock_region(config):
+    return config.get('region') or os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION')
+
+
+def _bedrock_availability(config):
+    if importlib.util.find_spec('boto3') is None:
+        return False, 'Install AWS SDK: python -m pip install -r requirements-bedrock.txt'
+    if not _bedrock_region(config):
+        return False, 'Set AWS_DEFAULT_REGION or AWS_REGION for Amazon Bedrock.'
+    ready = bool(os.environ.get('AWS_BEARER_TOKEN_BEDROCK', '').strip()
+                 or os.environ.get('AWS_PROFILE', '').strip()
+                 or (os.environ.get('AWS_ACCESS_KEY_ID', '').strip()
+                     and os.environ.get('AWS_SECRET_ACCESS_KEY', '').strip()))
+    return ready, None if ready else 'Amazon Bedrock AWS credentials are not configured.'
+
+
 class BedrockBackend(_HTTPBackend):
-    def generate(self, messages):
-        try:
+    def __init__(self, config):
+        super().__init__(config)
+        self.config['region'] = _bedrock_region(config)
+        self._runtime_client = None
+
+    def _client(self):
+        if self._runtime_client is None:
             import boto3
             from botocore.config import Config
-            client = boto3.client('bedrock-runtime', region_name=self.config.get('region', 'us-east-1'),
-                config=Config(connect_timeout=10, read_timeout=self.timeout_s, retries={'total_max_attempts': 1}))
-            system = [{'text': m['content']} for m in messages if m['role'] == 'system']
-            conversation = [{'role': m['role'], 'content': [{'text': m['content']}]} for m in messages if m['role'] in ('user', 'assistant')]
-            response = client.converse(modelId=self.model, system=system, messages=conversation,
-                inferenceConfig={'maxTokens': self.config.get('max_output_tokens', 2048), 'temperature': self.config.get('temperature', 0)})
-        except Exception as exc:
-            code = getattr(exc, 'response', {}).get('Error', {}).get('Code', 'connection_or_configuration_error')
-            if not re.fullmatch(r'[A-Za-z0-9_]+', str(code)): code = 'provider_error'
-            raise BackendError('Bedrock request failed: ' + code, normalize_usage({}, self.config), code) from None
-        usage = response.get('usage', {})
-        raw = {'model': self.model, 'id': response.get('ResponseMetadata', {}).get('RequestId'),
-            'usage': {'input_tokens': usage.get('inputTokens'), 'output_tokens': usage.get('outputTokens'),
-                'input_tokens_details': {'cached_tokens': usage.get('cacheReadInputTokens', 0)}}}
-        result = normalize_usage(raw, self.config)
-        result['text'] = ''.join(p['text'] for p in response.get('output', {}).get('message', {}).get('content', []) if isinstance(p.get('text'), str))
-        if response.get('stopReason') not in ('end_turn', 'stop_sequence') or not result['text']:
-            raise BackendError('Bedrock response incomplete or contains no text.', result, 'invalid_response')
-        return result
+            # A fresh session reads the current environment, including temporary
+            # session credentials. Disable automatic retries to preserve metering.
+            session = boto3.session.Session()
+            self._runtime_client = session.client('bedrock-runtime', region_name=self.config['region'],
+                config=Config(connect_timeout=min(10, self.timeout_s), read_timeout=self.timeout_s,
+                              retries={'total_max_attempts': 1}))
+        return self._runtime_client
 
-
-def bedrock_availability(config):
-    try:
-        import boto3
-        credentials = boto3.Session().get_credentials()
-        if credentials is None: return False, 'AWS credentials are not configured locally.'
-        return True, None
-    except ImportError:
-        return False, 'Install requirements-bedrock.txt in the server Python environment.'
-    except Exception:
-        return False, 'AWS credential configuration is unavailable.'
+    def generate(self, messages):
+        from botocore.exceptions import BotoCoreError, ClientError
+        system, conversation = [], []
+        for message in messages:
+            role, content = message.get('role'), message.get('content')
+            if role not in ('system', 'user', 'assistant') or not isinstance(content, str) or not content.strip():
+                raise BackendError('Bedrock requires nonempty text messages.', code='invalid_input')
+            if role == 'system':
+                system.append({'text': content})
+            elif conversation and conversation[-1]['role'] == role:
+                conversation[-1]['content'].append({'text': content})
+            else:
+                conversation.append({'role': role, 'content': [{'text': content}]})
+        if not conversation:
+            raise BackendError('Bedrock requires a conversation message.', code='invalid_input')
+        payload = {'modelId': self.model, 'messages': conversation,
+                   'inferenceConfig': {'maxTokens': self.config.get('max_output_tokens', 2048),
+                                       'temperature': self.config.get('temperature', 0)}}
+        if system: payload['system'] = system
+        try:
+            result = self._client().converse(**payload)
+        except ClientError as exc:
+            code = exc.response.get('Error', {}).get('Code')
+            allowed = {'AccessDeniedException', 'ExpiredTokenException', 'UnrecognizedClientException',
+                       'ValidationException', 'ThrottlingException', 'ResourceNotFoundException',
+                       'ServiceUnavailableException', 'ModelTimeoutException', 'ModelErrorException',
+                       'InternalServerException', 'InvalidSignatureException'}
+            code = code if code in allowed else 'provider_error'
+            raise BackendError(f'Bedrock {code}; check credentials, region and model access.',
+                               normalize_usage({}, self.config), code) from None
+        except (BotoCoreError, OSError, ValueError):
+            raise BackendError('Bedrock: credential, connection, timeout or invalid response.',
+                               normalize_usage({}, self.config), 'transport_error') from None
+        normalized = normalize_usage(result, self.config)
+        stop = result.get('stopReason')
+        if stop not in ('end_turn', 'stop_sequence'):
+            safe_stop = stop if stop in ('max_tokens', 'guardrail_intervened', 'content_filtered',
+                                         'tool_use', 'model_context_window_exceeded') else 'invalid'
+            raise BackendError(f'Bedrock response {safe_stop}.', normalized, 'response_' + safe_stop)
+        parts = (result.get('output') or {}).get('message', {}).get('content', [])
+        normalized['text'] = ''.join(p['text'] for p in parts if isinstance(p, dict) and isinstance(p.get('text'), str))
+        if not normalized['text'].strip():
+            raise BackendError('Bedrock response contains no text.', normalized, 'invalid_response')
+        return normalized
 
 
 class BackendRegistry:
@@ -161,7 +231,9 @@ class BackendRegistry:
         self.config = config
         load_local_env(config.get('env_file', '.env'))
         self.models = {item['id']: dict(item) for item in config.get('models', [])}
-        self.providers = {'ollama': (OllamaBackend, None), 'openai': (OpenAIBackend, None), 'bedrock': (BedrockBackend, bedrock_availability)}
+        self.artifact_hash_cache = ArtifactHashCache()
+        self.providers = {'ollama': (OllamaBackend, None), 'openai': (OpenAIBackend, None),
+                          'bedrock': (BedrockBackend, _bedrock_availability)}
         if len(self.models) != len(config.get('models', [])): raise ValueError('Duplicate model IDs.')
 
     def register_provider(self, name, factory, availability):
@@ -170,10 +242,11 @@ class BackendRegistry:
             raise ValueError('Provider name, factory and availability callable are required.')
         self.providers[name] = (factory, availability)
 
-    def _availability(self, item, tags_cache):
+    def _availability(self, item, tags_cache, *, verify_artifacts=False):
         if item.get('trained'):
             try:
-                manifest = validate_training_manifest(item.get('training_manifest', ''), model=item['model'])
+                manifest = validate_training_manifest(item.get('training_manifest', ''), model=item['model'],
+                                                      hash_cache=None if verify_artifacts else self.artifact_hash_cache)
             except (ValueError, OSError, TypeError): return False, 'Valid trained checkpoint and registered provenance are required.'
         else: manifest = None
         registration = self.providers.get(item['provider'])
@@ -216,11 +289,12 @@ class BackendRegistry:
         details = tag.get('details') if isinstance(tag.get('details'), dict) else {}
         return {'model_digest': tag.get('digest'), 'quantization': details.get('quantization_level')}
 
-    def create(self, model_id):
+    def create(self, model_id, *, verify_artifacts=True):
+        """Strict by default for benchmarks; interactive requests may reuse hashes."""
         if model_id not in self.models: raise BackendError('Unknown model ID.', code='unknown_model')
         item = self.models[model_id]
         cache = {}
-        ready, reason = self._availability(item, cache)
+        ready, reason = self._availability(item, cache, verify_artifacts=verify_artifacts)
         if not ready: raise BackendError(reason, normalize_usage({}, item), 'unavailable')
         backend = self.providers[item['provider']][0](item)
         identity = self._model_identity(item, cache)

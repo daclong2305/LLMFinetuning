@@ -1,0 +1,2 @@
+# Optional official AWS SDK for the Bedrock backend.
+boto3>=1.40,<2

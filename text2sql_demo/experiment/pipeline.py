@@ -89,6 +89,8 @@ def execute_preview(store, db_id, sql, schema):
         result=execute_readonly(path,normalized_sql)
         result['mode']='database'
         result['executed_sql']=normalized_sql
+        if hasattr(store, 'database_provenance'):
+            result.update(store.database_provenance(db_id))
         return result
     # This database is solely a syntax/identifier checker. Empty rows are never
     # returned as factual answers or used for execution accuracy.

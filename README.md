@@ -1,6 +1,6 @@
 # ViSQL Lab: thí nghiệm Text-to-SQL tiếng Việt
 
-Hệ thống thực nghiệm trên **ViText2SQL chính thức**: Qwen2.5-Coder gốc, Qwen đã fine-tune riêng và GPT snapshot cố định `gpt-4.1-mini-2025-04-14`. Một pipeline C0–C4 dùng chung cho mọi backend, có so sánh từng câu hỏi và benchmark/ablation. Model hoặc metric chưa đủ điều kiện luôn hiển thị **N/A/chưa sẵn sàng**, không thay bằng kết quả mô phỏng.
+Hệ thống thực nghiệm trên **ViText2SQL chính thức**: Qwen2.5-Coder gốc, Qwen đã fine-tune riêng và Claude Haiku 4.5 qua Amazon Bedrock (`us.anthropic.claude-haiku-4-5-20251001-v1:0`). Một pipeline C0–C4 dùng chung cho mọi backend, có so sánh từng câu hỏi và benchmark/ablation. Model hoặc metric chưa đủ điều kiện luôn hiển thị **N/A/chưa sẵn sàng**, không thay bằng kết quả mô phỏng.
 
 ## Chạy từ máy mới sau khi clone
 
@@ -29,6 +29,16 @@ Mở [http://127.0.0.1:8765](http://127.0.0.1:8765). Nếu server cũ đang ch�
 
 Runtime chính dùng Python >=3.10 và stdlib, không cần torch để mở giao diện. Ollama/model portable hiện có được tái sử dụng. Cấu hình mô hình nghiên cứu nằm trong [config/experiment.json](config/experiment.json); `-Model`/`-NumGpu` của launcher phục vụ demo bán lẻ cũ, còn các backend nghiên cứu lấy settings từ JSON.
 
+### Tốc độ khi trình diễn
+
+Màn hình hỏi đáp mặc định chọn một model sẵn sàng và C0. Tích thêm model khi cần so sánh; C1/C3 và các lượt sửa C4 sẽ tăng số lần gọi model. Cấu hình benchmark vẫn do người dùng chọn riêng.
+
+Giao diện và truy vấn tương tác dùng chung cache SHA256 trong phiên server: mỗi artifact chỉ đọc đầy đủ lần đầu, sau đó kiểm tra đường dẫn, định danh file, kích thước và thời gian thay đổi. Manifest và digest đăng ký Ollama vẫn được kiểm tra mỗi lần. File thay đổi/mất sẽ được kiểm tra lại hoặc từ chối. Cache này tối ưu cho file local ổn định, không phải cơ chế chống sửa file có chủ đích mà giữ nguyên metadata. Bắt đầu benchmark, train và export vẫn xác minh đầy đủ bytes; khởi động lại server cũng làm mất cache.
+
+Hai Qwen trong `config/experiment.json` đặt `keep_alive: "30m"` để Ollama giữ model trong bộ nhớ sau mỗi lượt gọi, nếu đủ bộ nhớ. Có thể đặt `0` để giải phóng ngay. Lần đầu vẫn cần nạp model; chuyển model hoặc thiếu bộ nhớ vẫn có thể gây nạp lại. Tham số này được lưu trong cấu hình run để đối chiếu benchmark.
+
+Máy này tiếp tục dùng CPU vì thử GPU còn gặp `CUDA error: device kernel image is invalid`. Sau khi sửa tương thích driver/runtime, thay `num_gpu` trong từng entry Qwen của JSON và khởi động lại server. Không dùng riêng `-NumGpu` để đổi compute của giao diện nghiên cứu.
+
 ## Dữ liệu và khóa split
 
 ```powershell
@@ -45,9 +55,16 @@ Train dùng cho SFT và few-shot retrieval; dev chọn cấu hình/checkpoint; t
 
 ## Mô hình, fine-tuning và mở rộng
 
+Để trình diễn kết quả truy vấn bằng dữ liệu mô phỏng, chạy
+`python scripts/seed_visql_demo.py`, khởi động lại server và chọn **Dev → architecture**.
+Bộ seed có 8 kiến trúc sư, 12 cầu và 10 nhà máy; không ghi đè database đã có.
+App gắn nhãn dữ liệu demo và không chấm EX/TS/VES trên dữ liệu tự tạo.
+
 - Qwen base: `qwen2.5-coder:3b`, mặc định CPU trên máy này.
 - Qwen fine-tuned: checkpoint riêng và manifest chứng minh quá trình huấn luyện, merge và đăng ký Ollama. Chuẩn bị dữ liệu không đồng nghĩa đã huấn luyện.
-- GPT: tạo `.env` local từ `.env.example`, điền `OPENAI_API_KEY` trên máy; không gửi key trong chat hoặc đưa vào Git. Thông tin/trace/export không trả credential. Chỉ có key chưa bảo đảm tài khoản có quyền gọi model; lỗi provider được ghi nhận.
+- Claude Haiku 4.5 (Bedrock): cài `python -m pip install -r requirements-bedrock.txt`. Điền `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (nếu là credential tạm thời) và `AWS_DEFAULT_REGION=us-east-1` trong `.env`; nếu chưa có `.env`, app đọc file `env`. Cả hai file được bỏ qua bởi Git. AWS SDK ký request; credential không xuất hiện trong info/trace/export. Tài khoản cần quyền gọi inference profile và quyền truy cập model. Có thể dùng `AWS_PROFILE` hoặc `AWS_BEARER_TOKEN_BEDROCK` thay cho các key.
+
+Model mặc định dùng profile US qua Converse API, với `maxTokens=2048`, `temperature=0`; không tự retry để tránh lệch số lượt gọi/usage khi lỗi. Region lấy từ cấu hình model, rồi `AWS_REGION`/`AWS_DEFAULT_REGION`. Giá cấu hình cho standard US geo inference là $1.10/$5.50 mỗi triệu input/output tokens, cache read $0.11 và cache write 5 phút $1.375; chi phí là ước tính theo usage, không gồm thuế. Tham khảo [model ID và inference profile của AWS](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html) và [bảng giá Anthropic cho AWS Bedrock](https://www-cdn.anthropic.com/files/4zrzovbb/website/3684c2faafb97418665782cea0001f439f74b1d2.pdf).
 
 ```powershell
 python scripts/train_qwen.py --diagnostics
@@ -77,8 +94,8 @@ Preset gồm baseline, C2, C2+C4, full và full bỏ lần lượt từng C1–C
 
 | Metric | Giao thức |
 |---|---|
-| EM | Spider Exact Set Match có adapter tên tiếng Việt; bỏ giá trị literal/DISTINCT và dùng FK equivalence theo chính sách upstream. Có SQLite compile guard. |
-| CM | Mean active-component F1 theo mẫu; có breakdown SELECT/WHERE/GROUP/ORDER/KEYWORDS và thành phần phụ. |
+| EM | Spider Exact Set Match có adapter tên tiếng Việt; bỏ giá trị literal/DISTINCT và dùng FK equivalence theo chính sách upstream. Có SQLite compile guard. Không phân biệt hoa/thường; `INNER JOIN` được chuẩn hóa thành `JOIN`. |
+| CM | Mean active-component F1 theo mẫu; có breakdown SELECT/WHERE/GROUP/ORDER/KEYWORDS và thành phần phụ. `HAVING` được tính trong `group`; `COUNT(cột)` và `COUNT(*)` vẫn khác cấu trúc. |
 | EX | So toàn bộ kết quả trên SQLite có dữ liệu và gold audit; giữ duplicate, chỉ yêu cầu thứ tự hàng khi gold có ORDER BY ở mức ngoài cùng; cho phép một hoán vị cột nhất quán. |
 | TS | Nhiều trạng thái dữ liệu đã xác minh; cần manifest, hash, provenance, schema, gold và ít nhất 2 trạng thái khác nhau. Đây là adapter nghiên cứu local, không tự nhận là official ViText2SQL leaderboard. |
 | VES | Bật bằng protocol riêng; tối thiểu 100 cặp gold/pred chạy xen kẽ, mean sqrt(gold_ms/pred_ms), chỉ khi EX/gold hợp lệ. Sai dự đoán điểm 0; VES là điểm hiệu suất có thể lớn hơn 1, không phải tỷ lệ accuracy. |
@@ -88,6 +105,8 @@ Preset gồm baseline, C2, C2+C4, full và full bỏ lần lượt từng C1–C
 
 N/A không phải 0. Báo cáo có denominator/coverage từng metric, lỗi/timeout, per-difficulty, component F1, Wilson 95% (giả định theo mẫu; các câu cùng DB có thể tương quan). Dự đoán lỗi/timeout vẫn nằm trong denominator khi gold/assets hợp lệ. Gold không chấm được có lý do và coverage riêng. Preview 200 dòng không được dùng làm kết quả chấm điểm.
 
+Với EM/CM, SQL sai cú pháp hoặc sai tên bảng/cột nhận 0 khi SQL tham chiếu chấm được. SQL hợp lệ qua SQLite nhưng adapter Spider chưa phân tích được nhận N/A kèm lý do, được tính vào phần thiếu coverage thay vì điểm 0. Chuẩn hóa `INNER JOIN` áp dụng cho cả dự đoán và tham chiếu; không đổi các kiểu join khác thành inner join. Các run đã lưu giữ nguyên điểm cũ; khởi động lại server và chạy so sánh/benchmark mới để dùng bộ chấm đã cập nhật.
+
 TS dùng `.runtime/datasets/vitext2sql/test-suite-manifest.json`; VES dùng `evaluation-options.json`. Contract và giới hạn đầy đủ tại [vendor/spider/NOTICE.md](text2sql_demo/experiment/vendor/spider/NOTICE.md). Thiếu assets thì EX/TS/VES hiện N/A; không có số benchmark ngụy tạo.
 
 ## Chạy và xuất benchmark
@@ -95,7 +114,7 @@ TS dùng `.runtime/datasets/vitext2sql/test-suite-manifest.json`; VES dùng `eva
 ```powershell
 python scripts/run_benchmark.py --split dev --limit 10 --models qwen_base --presets c0 c2_c4 --output reports/pilot.csv
 # Chạy full dev bằng limit 954; chỉ thêm model đã sẵn sàng:
-python scripts/run_benchmark.py --split dev --limit 954 --models qwen_base qwen_ft gpt --presets c0 full
+python scripts/run_benchmark.py --split dev --limit 954 --models qwen_base qwen_ft claude_haiku --presets c0 full
 # Test khóa, chỉ đánh giá cuối sau khi chốt:
 python scripts/run_benchmark.py --split test --limit 1908 --models qwen_base --presets c0 --final-evaluation
 ```

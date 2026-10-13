@@ -4,57 +4,9 @@
   "database_dir": ".runtime/datasets/vitext2sql/database",
   "runs_dir": "reports/experiments",
   "models": [
-    {
-      "id": "visql_custom",
-      "label": "Model GGUF của nhóm · Q4_K_M",
-      "provider": "ollama",
-      "model": "visql-custom:latest",
-      "base_url": "http://127.0.0.1:11434",
-      "num_gpu": 0,
-      "num_ctx": 16384,
-      "num_predict": 2048,
-      "temperature": 0,
-      "seed": 42,
-      "timeout_s": 240
-    },
-    {
-      "id": "qwen_base",
-      "label": "Qwen2.5-Coder · gốc",
-      "provider": "ollama",
-      "model": "qwen2.5-coder:3b",
-      "base_url": "http://127.0.0.1:11434",
-      "num_gpu": 0,
-      "num_ctx": 16384,
-      "num_predict": 2048,
-      "temperature": 0,
-      "seed": 42,
-      "timeout_s": 240
-    },
-    {
-      "id": "qwen_ft",
-      "label": "Qwen2.5-Coder · fine-tuned",
-      "provider": "ollama",
-      "model": "qwen2.5-coder-vitext2sql:3b",
-      "base_url": "http://127.0.0.1:11434",
-      "trained": true,
-      "training_manifest": ".runtime/training/qwen-kaggle-merged/qwen-kaggle/training_manifest.json",
-      "num_gpu": 0,
-      "num_ctx": 16384,
-      "num_predict": 2048,
-      "temperature": 0,
-      "seed": 42,
-      "timeout_s": 240
-    },
-    {
-      "id": "bedrock_haiku",
-      "label": "Claude Haiku 4.5 · Amazon Bedrock",
-      "provider": "bedrock",
-      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "region": "us-east-1",
-      "max_output_tokens": 2048,
-      "temperature": 0,
-      "timeout_s": 180
-    }
+    {"id": "qwen_base", "label": "Qwen2.5-Coder · gốc", "provider": "ollama", "model": "qwen2.5-coder:3b", "base_url": "http://127.0.0.1:11434", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240, "keep_alive": "30m"},
+    {"id": "qwen_ft", "label": "Qwen2.5-Coder · fine-tuned", "provider": "ollama", "model": "qwen2.5-coder-vitext2sql:3b", "base_url": "http://127.0.0.1:11434", "trained": true, "training_manifest": ".runtime/training/qwen-kaggle-merged/qwen-kaggle/training_manifest.json", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240, "keep_alive": "30m"},
+    {"id": "claude_haiku", "label": "Claude Haiku 4.5 · Amazon Bedrock", "provider": "bedrock", "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "max_output_tokens": 2048, "temperature": 0, "timeout_s": 180, "pricing": {"input": 1.10, "cached_input": 0.11, "cache_write": 1.375, "output": 5.50}, "pricing_date": "2026-10-13"}
   ],
   "presets": [
     {

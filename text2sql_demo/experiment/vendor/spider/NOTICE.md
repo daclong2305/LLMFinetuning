@@ -18,6 +18,13 @@ schema-only SQLite connection before structural scoring, rejecting malformed
 targets rather than awarding scores for partially parsed SQL. Unsupported gold
 targets remain unavailable with explicit coverage and audit reasons.
 
+The application adapter normalizes explicit INNER JOIN to JOIN before alias
+parsing, preserving quoted text. Other join modifiers are not accepted as
+implicit aliases or coerced to INNER JOIN. SQLite-valid predictions unsupported
+by the structural parser yield unavailable EM/CM with reasons and reduced
+coverage; invalid predictions still score zero when gold is eligible. COUNT(*)
+and COUNT(column) remain distinct structural expressions, including in HAVING.
+
 The execution adapter preserves duplicate rows and requires row order only for
 outermost ORDER BY. It accepts one consistent global projection permutation;
 independent per-row permutations are not accepted. Static database snapshots
