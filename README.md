@@ -109,6 +109,19 @@ Với EM/CM, SQL sai cú pháp hoặc sai tên bảng/cột nhận 0 khi SQL tha
 
 TS dùng `.runtime/datasets/vitext2sql/test-suite-manifest.json`; VES dùng `evaluation-options.json`. Contract và giới hạn đầy đủ tại [vendor/spider/NOTICE.md](text2sql_demo/experiment/vendor/spider/NOTICE.md). Thiếu assets thì EX/TS/VES hiện N/A; không có số benchmark ngụy tạo.
 
+Chuẩn bị database thật và test suite đã công bố cho schema tiếng Việt:
+
+```powershell
+python scripts/download_execution_sources.py
+python scripts/prepare_execution_assets.py --self-check
+```
+
+Lệnh tải khoảng 1,4 GB nguồn, kiểm tra SHA-256 và ghi provenance riêng trong `.runtime/metric-sources`. Khi Google Drive giới hạn lượt tải Spider, script dùng mirror với revision và checksum cố định. Importer đổi tên bảng/cột theo chỉ số schema đã đối chiếu, giữ nguyên các dòng dữ liệu, kiểu lưu trữ, index và ràng buộc; không tự dịch giá trị hay sửa gold. Database demo `architecture` được sao lưu trước khi thay bằng dữ liệu thật; database ngoài provenance được giữ nguyên. Cần đủ dung lượng cho database và các state đã giải nén (vài GB). Không đưa dữ liệu tải về hoặc dữ liệu đã đổi tên lên Git.
+
+Xem `.runtime/datasets/vitext2sql/execution-assets-readiness.json` để biết coverage và nguyên nhân thiếu EX/TS theo từng schema; `execution-assets-import.json` giữ hash và ánh xạ nguồn. TS chỉ bật khi toàn bộ state của suite đã nhập tương thích, audit gold thành công và có ít nhất hai trạng thái dữ liệu khác nhau. Bộ test suite công bố không bao phủ toàn bộ schema ViText2SQL. VES được cấu hình 100 cặp chạy; đây là protocol local đã mô tả ở trên. Gold self-check xác minh assets/evaluator, không phải điểm model.
+
+Sau khi nhập xong, khởi động lại server và chạy so sánh/benchmark mới. Các run cũ giữ nguyên dữ liệu và điểm đã lưu. Có thể audit lại assets hiện có bằng `python scripts/prepare_execution_assets.py --audit-only --self-check`. Hướng dẫn và kết quả chuẩn bị tại [docs/execution-metrics.vi.md](docs/execution-metrics.vi.md).
+
 ## Chạy và xuất benchmark
 
 ```powershell

@@ -1,0 +1,22 @@
+{
+  "sample_id": "dev:00121",
+  "db_id": "concert_singer",
+  "model_id": "qwen_base",
+  "status": "ok",
+  "dataset_fingerprint": "69605a204c288e1673685571413b5a9e5d23df2928787a5098142ed34ebc066d",
+  "metrics": {
+    "em": true,
+    "cm": 1.0,
+    "ex": 1,
+    "ts": 1,
+    "ves": 1.0145743403663823,
+    "input_tokens": 463,
+    "output_tokens": 23,
+    "calls": 1,
+    "cost_usd": 0.0,
+    "latency_ms": 5970.92
+  },
+  "ves_pairs": 100,
+  "ts_states": 32,
+  "unavailable_reasons": {}
+}

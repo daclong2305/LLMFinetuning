@@ -181,6 +181,8 @@ Sau khi chốt cấu hình trên dev, tăng `--limit` lên `954` để chạy fu
 
 Muốn EX, cung cấp SQLite có dữ liệu và schema tương thích tại `.runtime/datasets/vitext2sql/database/<db_id>/<db_id>.sqlite`, audit lại và khởi động lại app. TS/VES cần thêm assets/protocol riêng theo README.
 
+Có thể chuẩn bị nguồn Spider thật và các test suite đã công bố bằng `python scripts/download_execution_sources.py`, sau đó `python scripts/prepare_execution_assets.py --self-check`. Xem [hướng dẫn chỉ số execution](execution-metrics.vi.md) về coverage, dữ liệu không tương thích và cách chạy lại benchmark.
+
 ## 9. GPT tùy chọn
 
 ```powershell
