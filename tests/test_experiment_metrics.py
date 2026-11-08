@@ -1,3 +1,4 @@
+from contextlib import closing
 import sqlite3
 import hashlib
 import json
@@ -28,7 +29,7 @@ class MetricTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'b.sqlite'
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             con.execute('create table "Khách hàng"("mã" integer, "tên" text)')
             con.executemany('insert into "Khách hàng" values (?,?)', [(i, 'x') for i in range(1, 302)] + [(301, 'x')])
 
@@ -65,7 +66,7 @@ class MetricTests(unittest.TestCase):
         self.assertNotEqual(denied['status'], 'ok')
 
     def test_empty_database_never_qualifies_for_execution_accuracy(self):
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             con.execute('delete from "Khách hàng"')
         result = evaluate_prediction(self.sample['gold_sql'], self.sample, Store(self.path))
         self.assertIsNone(result['ex'])
@@ -133,7 +134,7 @@ class MetricTests(unittest.TestCase):
         databases = root / 'database'
         databases.mkdir()
         path = databases / 'b.sqlite'
-        with sqlite3.connect(path) as con:
+        with closing(sqlite3.connect(path)) as con, con:
             con.execute('create table "Khách hàng"("mã" integer, "tên" text)')
             con.executemany('insert into "Khách hàng" values (?,?)', [(1, 'a'), (2, 'b')])
         con.close()
@@ -144,7 +145,7 @@ class MetricTests(unittest.TestCase):
             files = []
             for index, values in enumerate(([(1, 'a'), (2, 'b')], [(1, 'a'), (2, 'b'), (20, 'c')])):
                 suite = root / ('state' + str(index) + '.sqlite')
-                with sqlite3.connect(suite) as con:
+                with closing(sqlite3.connect(suite)) as con, con:
                     con.execute('create table "Khách hàng"("mã" integer, "tên" text)')
                     con.executemany('insert into "Khách hàng" values (?,?)', values)
                 con.close()
@@ -219,7 +220,7 @@ class MetricTests(unittest.TestCase):
         first = store.root / 'state0.sqlite'
         second = store.root / 'state1.sqlite'
         second.write_bytes(first.read_bytes())
-        with sqlite3.connect(second) as con:
+        with closing(sqlite3.connect(second)) as con, con:
             con.execute('pragma user_version=12')
         con.close()
         manifest_path = store.root / 'test-suite-manifest.json'
@@ -233,7 +234,7 @@ class MetricTests(unittest.TestCase):
 
     def test_test_suite_missing_schema_or_changed_snapshot_is_unavailable(self):
         store = self._optional_store(with_suite=True)
-        with sqlite3.connect(store.root / 'state1.sqlite') as con:
+        with closing(sqlite3.connect(store.root / 'state1.sqlite')) as con, con:
             con.execute('drop table "Khách hàng"')
         con.close()
         result = evaluate_prediction(self.sample['gold_sql'], self.sample, store)

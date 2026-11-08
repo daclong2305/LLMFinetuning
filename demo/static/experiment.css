@@ -17,3 +17,32 @@
 #compare-button[aria-busy=true]{opacity:1;cursor:wait}
 @keyframes spinner-rotate{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spinner{animation:none}}
+
+/* Prompt comparison and reporting */
+.prompt-filters { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:16px 0; }
+.prompt-filters label { font-size:12px; color:var(--muted,#64748b); }
+.prompt-filters select { width:100%; margin-top:6px; }
+.prompt-pair { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.prompt-pane { min-width:0; border:1px solid #dce4ea; border-radius:10px; overflow:hidden; }
+.prompt-pane h3 { margin:0; padding:12px; background:#f1f5f9; font-size:13px; }
+.prompt-pane pre { margin:0; max-height:520px; overflow:auto; background:#fafcfe; padding:12px; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.diff-add { display:block; background:#dcfce7; color:#14532d; }
+.diff-remove { display:block; background:#fee2e2; color:#7f1d1d; }
+.diff-same { display:block; }
+#prompt-inspector { margin-top:20px; }
+#report-context { margin:16px 0; }
+#report-records { max-height:460px; margin:16px 0; }
+.report-manifest pre { max-height:300px; overflow:auto; }
+.question-actions { flex-wrap:wrap; gap:8px; }
+.prompt-summary { margin:12px 0; }
+@media(max-width:850px) { .prompt-pair,.prompt-filters { grid-template-columns:1fr; } }
+
+.workspace > *, .benchmark-layout > *, .panel, .experiment-main, .bars, .bar-track { min-width:0; }
+.notice, .history-row strong, .progress-footer code { overflow-wrap:anywhere; }
+@media(max-width:480px) { .history-row,.progress-footer { flex-wrap:wrap; } .section-heading { flex-wrap:wrap; } }
+
+.prompt-rationale { margin:16px 0; padding:18px; background:#f2faf7; border:1px solid #cce4db; border-radius:10px; overflow-wrap:anywhere; }
+.prompt-rationale p { font-size:12px; margin-bottom:12px; }
+.prompt-rationale h3,.prompt-rationale h4 { margin:0 0 10px; }
+.rationale-example { border-top:1px solid #cce4db; padding:14px 0 4px; }
+.rationale-example pre { max-height:220px; overflow:auto; padding:10px; background:white; }

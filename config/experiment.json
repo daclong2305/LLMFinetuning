@@ -4,9 +4,52 @@
   "database_dir": ".runtime/datasets/vitext2sql/database",
   "runs_dir": "reports/experiments",
   "models": [
-    {"id": "qwen_base", "label": "Qwen2.5-Coder · gốc", "provider": "ollama", "model": "qwen2.5-coder:3b", "base_url": "http://127.0.0.1:11434", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240, "keep_alive": "30m"},
-    {"id": "qwen_ft", "label": "Qwen2.5-Coder · fine-tuned", "provider": "ollama", "model": "qwen2.5-coder-vitext2sql:3b", "base_url": "http://127.0.0.1:11434", "trained": true, "training_manifest": ".runtime/training/qwen-kaggle-merged/qwen-kaggle/training_manifest.json", "num_gpu": 0, "num_ctx": 16384, "num_predict": 2048, "temperature": 0, "seed": 42, "timeout_s": 240, "keep_alive": "30m"},
-    {"id": "claude_haiku", "label": "Claude Haiku 4.5 · Amazon Bedrock", "provider": "bedrock", "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "max_output_tokens": 2048, "temperature": 0, "timeout_s": 180, "pricing": {"input": 1.10, "cached_input": 0.11, "cache_write": 1.375, "output": 5.50}, "pricing_date": "2026-10-13"}
+    {
+      "id": "qwen_base",
+      "label": "Qwen2.5-Coder · gốc",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:3b",
+      "base_url": "http://127.0.0.1:11434",
+      "num_gpu": 0,
+      "num_ctx": 16384,
+      "num_predict": 2048,
+      "temperature": 0,
+      "seed": 42,
+      "timeout_s": 240,
+      "keep_alive": "30m"
+    },
+    {
+      "id": "qwen_ft",
+      "label": "Qwen2.5-Coder · fine-tuned",
+      "provider": "ollama",
+      "model": "qwen2.5-coder-vitext2sql:3b",
+      "base_url": "http://127.0.0.1:11434",
+      "trained": true,
+      "training_manifest": ".runtime/training/qwen-kaggle-merged/qwen-kaggle/training_manifest.json",
+      "num_gpu": 0,
+      "num_ctx": 16384,
+      "num_predict": 2048,
+      "temperature": 0,
+      "seed": 42,
+      "timeout_s": 240,
+      "keep_alive": "30m"
+    },
+    {
+      "id": "claude_haiku",
+      "label": "Claude Haiku 4.5 · Amazon Bedrock",
+      "provider": "bedrock",
+      "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "max_output_tokens": 2048,
+      "temperature": 0,
+      "timeout_s": 180,
+      "pricing": {
+        "input": 1.1,
+        "cached_input": 0.11,
+        "cache_write": 1.375,
+        "output": 5.5
+      },
+      "pricing_date": "2026-10-13"
+    }
   ],
   "presets": [
     {
@@ -72,6 +115,46 @@
       "c2": true,
       "c3": true,
       "c4": false
+    },
+    {
+      "id": "p0",
+      "label": "P0 · C0 baseline",
+      "c1": false,
+      "c2": false,
+      "c3": false,
+      "c4": false
+    },
+    {
+      "id": "p1",
+      "label": "P1 · +C1 phân rã",
+      "c1": true,
+      "c2": false,
+      "c3": false,
+      "c4": false
+    },
+    {
+      "id": "p2",
+      "label": "P2 · +C2 ví dụ/schema",
+      "c1": true,
+      "c2": true,
+      "c3": false,
+      "c4": false
+    },
+    {
+      "id": "p3",
+      "label": "P3 · +C3 kế hoạch",
+      "c1": true,
+      "c2": true,
+      "c3": true,
+      "c4": false
+    },
+    {
+      "id": "p4",
+      "label": "P4 · +C4 sửa lỗi",
+      "c1": true,
+      "c2": true,
+      "c3": true,
+      "c4": true
     }
   ]
 }

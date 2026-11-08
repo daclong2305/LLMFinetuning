@@ -2,6 +2,21 @@
 
 Hệ thống thực nghiệm trên **ViText2SQL chính thức**: Qwen2.5-Coder gốc, Qwen đã fine-tune riêng và Claude Haiku 4.5 qua Amazon Bedrock (`us.anthropic.claude-haiku-4-5-20251001-v1:0`). Một pipeline C0–C4 dùng chung cho mọi backend, có so sánh từng câu hỏi và benchmark/ablation. Model hoặc metric chưa đủ điều kiện luôn hiển thị **N/A/chưa sẵn sàng**, không thay bằng kết quả mô phỏng.
 
+## Hai màn hình ICL (P0–P4)
+
+- **Thử nghiệm prompt**: chọn mẫu dev và model, chạy cộng dồn P0=C0, P1=+C1, P2=+C2, P3=+C3, P4=+C4. Mỗi cấu hình chạy độc lập; kết quả cập nhật dần và được lưu cùng lịch sử báo cáo. Nút xem trước không gọi model; C1/C3 chưa có đầu ra được ghi placeholder. Chọn model/cấu hình/lượt gọi để xem prompt thực và diff với cấu hình liền trước. C4 không có lượt sửa nếu SQL chạy được; không dùng gold để sửa SQL chạy được nhưng sai ý.
+- **Báo cáo thông số**: theo dõi tiến độ, mở run đã lưu, xem metric và coverage, usage, chi phí và latency. Xem từng mẫu để mở lại prompt, SQL và lỗi; xuất CSV/JSON. Run tập con luôn gắn nhãn pilot, kể cả đã hoàn thành. Manifest chứa ID mẫu và điều kiện chạy.
+
+Bộ xem prompt có giải thích chi tiết cho **cả P0–P4**: mục đích, đoạn được thêm, luồng xử lý, bằng chứng trong trace và đánh đổi. P0 giải thích instruction/schema/question/JSON; P1 hiển thị đầu ra C1 và xác nhận có chèn vào prompt sinh SQL hay chưa; P2 nêu thay đổi schema, từ trùng và Jaccard của ví dụ train; P3 hiển thị đầu ra C3 và khối kế hoạch đã chèn; P4 nêu feedback lỗi, lượt sửa thực và kết quả sau sửa hoặc lý do không phát sinh sửa. Preview phân biệt rõ dữ liệu chưa có với đầu ra chạy thật. Giải thích dùng prompt/trace đã lưu, không gọi thêm model, không thay điểm cũ và không coi JSON hợp lệ là bằng chứng model phân rã/lập kế hoạch đúng.
+
+Pilot cân bằng luân phiên giữa độ khó và database bằng thuật toán xác định; không phải mẫu ngẫu nhiên đại diện toàn bộ dữ liệu. C0–C4 là taxonomy của survey; P0–P4 là chuỗi cộng dồn do project thiết kế, không chứng minh tác dụng độc lập của từng module.
+
+```powershell
+python scripts/run_benchmark.py --split dev --limit 20 --sample-selection balanced --models qwen_base claude_haiku --presets p0 p1 p2 p3 p4 --output reports/pilot-cumulative.csv
+```
+
+Huấn luyện Kaggle và các thay đổi fine-tuning thuộc đợt 3, chưa thực hiện trong đợt giao diện/báo cáo này.
+
 ## Chạy từ máy mới sau khi clone
 
 Xem [hướng dẫn đầy đủ cho Windows/PowerShell](docs/getting-started.vi.md): cài runtime, tải dữ liệu, tải/import GGUF đã phát hành, cấu hình model, benchmark và xử lý lỗi.

@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--limit',type=int,default=10)
     parser.add_argument('--models',nargs='+',default=['qwen_base'])
     parser.add_argument('--presets',nargs='+',default=['c0'])
+    parser.add_argument('--sample-selection',choices=['first','balanced'],default='first')
     parser.add_argument('--final-evaluation',action='store_true')
     parser.add_argument('--output',type=Path)
     parser.add_argument('--status',metavar='RUN_ID')
@@ -26,7 +27,7 @@ def main():
     service=ExperimentService(ROOT,args.config)
     if args.status:
         print(json.dumps(service.benchmarks.job(args.status),ensure_ascii=False,indent=2)); return
-    job=service.benchmarks.start({'split':args.split,'limit':args.limit,'model_ids':args.models,'preset_ids':args.presets,'final_evaluation':args.final_evaluation})
+    job=service.benchmarks.start({'split':args.split,'limit':args.limit,'model_ids':args.models,'preset_ids':args.presets,'sample_selection':args.sample_selection,'final_evaluation':args.final_evaluation})
     print('Run: '+job['id'],flush=True)
     try:
         previous=None

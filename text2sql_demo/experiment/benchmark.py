@@ -123,7 +123,7 @@ class RunRepository:
             for path in sorted(self.root.glob('*.json'),key=lambda p:p.stat().st_mtime,reverse=True)[:50]:
                 try:
                     value=self.load(path.stem)
-                    items.append({key:value.get(key) for key in ('id','state','split','created_at','summary','dataset_fingerprint','done','total','error')})
+                    items.append({key:value.get(key) for key in ('id','state','split','created_at','summary','dataset_fingerprint','done','total','error','scope','purpose','sample_selection')})
                 except (ValueError,OSError):
                     continue
         return items
@@ -135,6 +135,30 @@ class RunRepository:
         for row in run['summary']['rows']:
             writer.writerow({key:json.dumps(row[key],ensure_ascii=False) if isinstance(row.get(key),(dict,list)) else row.get(key) for key in keys})
         return ('\ufeff'+stream.getvalue()).encode('utf-8')
+
+
+def select_samples(samples, limit, strategy='first'):
+    if strategy == 'first':
+        return samples[:limit]
+    if strategy != 'balanced':
+        raise ValueError('sample_selection phải là first hoặc balanced.')
+    # Deterministic round-robin across difficulty and database, avoiding a
+    # pilot made entirely from the first schema in source order.
+    buckets = defaultdict(lambda: defaultdict(list))
+    for sample in samples:
+        buckets[sample.get('difficulty', 'unknown')][sample['db_id']].append(sample)
+    queues = {difficulty: list(sorted(dbs)) for difficulty, dbs in buckets.items()}
+    selected = []
+    while len(selected) < min(limit, len(samples)):
+        for difficulty in sorted(buckets):
+            queue = queues[difficulty]
+            if not queue or len(selected) >= min(limit, len(samples)):
+                continue
+            db = queue.pop(0)
+            selected.append(buckets[difficulty][db].pop(0))
+            if buckets[difficulty][db]:
+                queue.append(db)
+    return selected
 
 
 class BenchmarkManager:
@@ -159,13 +183,31 @@ class BenchmarkManager:
         if not isinstance(preset_ids,list) or not preset_ids or any(p not in self.presets for p in preset_ids) or len(set(preset_ids))!=len(preset_ids):
             raise ValueError('Preset không hợp lệ hoặc trùng lặp.')
         models={m:self.registry.create(m) for m in model_ids}
-        samples=self.store.samples(split,limit=limit)
+        selection=payload.get('sample_selection', 'first')
+        if selection not in ('first', 'balanced'):
+            raise ValueError('sample_selection phải là first hoặc balanced.')
+        requested=payload.get('sample_ids')
+        if requested is not None:
+            if not isinstance(requested,list) or not requested or len(requested)>100 or any(not isinstance(x,str) for x in requested) or len(set(requested))!=len(requested):
+                raise ValueError('sample_ids cần từ 1 đến 100 ID khác nhau.')
+            available={s['id']:s for s in self.store.samples(split)}
+            if any(x not in available for x in requested):
+                raise ValueError('Mẫu phải thuộc split đã chọn; không dùng train trong benchmark.')
+            samples=[available[x] for x in requested]
+            selection='explicit'
+        elif selection == 'first':
+            samples=self.store.samples(split,limit=limit)
+        else:
+            samples=select_samples(self.store.samples(split),limit,selection)
         if not samples:
             raise ValueError('Chưa có dataset hoặc split rỗng.')
         metadata=self.store.summary()
         expected={m+':'+p:len(samples) for m in model_ids for p in preset_ids}
         code=code_snapshot()
         run={'id':uuid.uuid4().hex,'state':'running','split':split,'created_at':datetime.now(timezone.utc).isoformat(),'done':0,'total':sum(expected.values()),'error':None,'owner':process_identity(),'sample_ids':[s['id'] for s in samples],'dataset_fingerprint':metadata.get('fingerprint'),'dataset_revision':metadata.get('revision'),'dataset_source_hashes':metadata.get('source_hashes'),'database_hashes':metadata.get('database_hashes'),'metric_assets_fingerprint':metadata.get('metric_assets_fingerprint'),'evaluation_options':metadata.get('evaluation_options'),'models':[experiment_snapshot(models[m],m) for m in model_ids],'presets':[self.presets[p] for p in preset_ids],'code_sha256':code,'runtime':runtime_snapshot(),'records':[],'expected':expected,'summary':summarize_records([],expected),'evaluator_policy':'Spider EM/CM adapter ignores literal values and DISTINCT, uses FK equivalence; full bounded read-only EX only with compatible data; predicted values, no oracle plug_value; local validated TS and repeated VES adapters'}
+        run['sample_selection']=selection
+        run['scope']='full' if len(samples)==metadata.get('split_counts',{}).get(split) else 'pilot'
+        run['purpose']='prompt_comparison' if requested is not None and len(samples)==1 else 'benchmark'
         with self.lock:
             if any(not event.is_set() for event,thread in self.active.values() if thread.is_alive()):
                 raise ValueError('Một benchmark đang chạy. Đợi hoàn tất hoặc hủy trước.')
@@ -198,7 +240,7 @@ class BenchmarkManager:
 
     def job(self,run_id):
         run=self.repository.load(run_id)
-        return {key:run.get(key) for key in ('id','state','done','total','error','summary','dataset_fingerprint','split')}
+        return {key:run.get(key) for key in ('id','state','done','total','error','summary','dataset_fingerprint','split','scope','purpose','sample_selection','sample_ids','presets','models','runtime','code_sha256')}
 
     def wait(self,run_id,timeout=None):
         self.repository.path(run_id)

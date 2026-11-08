@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import sqlite3
 import tempfile
@@ -23,7 +24,7 @@ class DemoTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Path(self.temp.name) / 'fixture.sqlite'
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.executescript('''
                 CREATE TABLE customers(id INTEGER PRIMARY KEY, name TEXT);
                 CREATE TABLE products(id INTEGER PRIMARY KEY, name TEXT);

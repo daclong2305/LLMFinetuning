@@ -9,7 +9,7 @@ from pathlib import Path
 from .backends import BackendRegistry,load_local_env
 from .benchmark import BenchmarkManager
 from .dataset import DatasetStore
-from .pipeline import run_experiment,validate_options
+from .pipeline import run_experiment,validate_options,preview_prompt
 from .training import training_status
 
 
@@ -100,6 +100,13 @@ class ExperimentService:
 
     def post(self,route,payload):
         self._refresh_credentials()
+        if route=='/api/experiment/prompt-preview':
+            sample=self.store.get_sample(payload.get('sample_id',''))
+            if sample['split']=='test':
+                raise ValueError('Mẫu test được khóa cho đánh giá cuối.')
+            chosen=[p for p in self.config['presets'] if p['id'] in ('p0','p1','p2','p3','p4')]
+            return {'sample':{k:sample[k] for k in ('id','question','db_id','split')},
+                    'results':[{'preset_id':p['id'],'label':p['label'],**preview_prompt(self.store,sample,{k:p[k] for k in ('c1','c2','c3','c4')})} for p in chosen]},200
         if route=='/api/experiment/compare':
             options=validate_options(payload.get('options',{}))
             if not self.store.summary()['ready']:

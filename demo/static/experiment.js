@@ -2,20 +2,23 @@
 (() => {
   const $ = (selector, scope = document) => scope.querySelector(selector);
   const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
-  const state = { info: null, samples: [], source: "dataset", comparison: null, job: null, poll: null, searchTimer: null, sampleRequest: 0, busy: false, starting: false };
+  const state = { info: null, samples: [], source: "dataset", comparison: null, job: null, poll: null, searchTimer: null, sampleRequest: 0, busy: false, previewBusy: false, starting: false };
+  let promptSample = null;
+  let promptData = [], promptPreview = false, sequenceId = null, sequenceTimer = null, sequenceDone = -1;
+  const cumulativeIds = ["p0", "p1", "p2", "p3", "p4"];
   const scoreKeys = ["em", "cm", "ex", "ts", "ves"];
   const safe = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
   const numeric = value => typeof value === "number" && Number.isFinite(value);
   const number = (value, decimals = 0) => numeric(value) ? value.toLocaleString("vi-VN", { maximumFractionDigits: decimals }) : "N/A";
   const percentage = value => numeric(value) || typeof value === "boolean" ? `${number(Number(value) * 100, 1)}%` : "N/A";
   const score = (key, value) => key === "ves" ? number(value, 3) : percentage(value);
-  const duration = value => numeric(value) ? value >= 1000 ? `${number(value / 1000, 2)} s` : `${number(value)} ms` : "N/A";
+  const duration = value => numeric(value) ? value >= 1000 ? `${number(value / 1000, 2)} s` : `${number(value, value < 10 ? 2 : 0)} ms` : "N/A";
   const money = value => numeric(value) ? `$${value.toLocaleString("en-US", { minimumFractionDigits: value > 0 ? 4 : 2, maximumFractionDigits: 6 })}` : "N/A";
   const pretty = value => typeof value === "string" ? value : JSON.stringify(value, null, 2);
   const selected = selector => $$(selector).filter(input => input.checked && !input.disabled).map(input => input.value);
   const modelLabel = id => state.info?.models?.find(model => model.id === id)?.label || id || "Mô hình";
-  const statusLabels = { ready: "Sẵn sàng", completed: "Hoàn tất", complete: "Hoàn tất", success: "Thành công", ok: "Thành công", error: "Lỗi", failed: "Thất bại", unavailable: "Chưa sẵn sàng", pending: "Đang chờ", queued: "Đang chờ", running: "Đang chạy", cancelled: "Đã hủy", cancel_requested: "Đang hủy", partial: "Chưa hoàn tất" };
-  const statusBadge = status => `<span class="badge ${["failed", "error"].includes(status) ? "error" : ["unavailable", "cancelled", "partial"].includes(status) ? "warn" : ["running", "pending", "queued"].includes(status) ? "neutral" : ""}">${safe(statusLabels[status] || status || "Chưa đo")}</span>`;
+  const statusLabels = { ready: "Sẵn sàng", completed: "Hoàn tất", complete: "Hoàn tất", success: "Thành công", ok: "Thành công", error: "Lỗi", failed: "Thất bại", unavailable: "Chưa sẵn sàng", pending: "Đang chờ", queued: "Đang chờ", running: "Đang chạy", cancelled: "Đã hủy", cancel_requested: "Đang hủy", partial: "Chưa hoàn tất", interrupted: "Bị gián đoạn" };
+  const statusBadge = status => `<span class="badge ${["failed", "error"].includes(status) ? "error" : ["unavailable", "cancelled", "partial", "interrupted"].includes(status) ? "warn" : ["running", "pending", "queued"].includes(status) ? "neutral" : ""}">${safe(statusLabels[status] || status || "Chưa đo")}</span>`;
   const notice = (element, message, error = false) => { element.textContent = message; element.classList.toggle("error", error); };
   async function api(path, body) {
     const response = await fetch(`/api/experiment/${path}`, { method: body ? "POST" : "GET", headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
@@ -34,6 +37,11 @@
   function updateButtons() {
     const questionReady = state.source === "dataset" ? !!currentSample() : !!$("#custom-question").value.trim() && !!dbId();
     $("#compare-button").disabled = state.busy || !selected(".compare-model").length || !questionReady;
+    const cumulative = $("#compare-mode").value === "cumulative";
+    $("#single-options").hidden = cumulative;
+    if (cumulative) $("#preset-label").textContent = "P0 → P4";
+    if (cumulative && (state.source !== "dataset" || currentSample()?.split !== "dev")) $("#compare-button").disabled = true;
+    $("#prompt-preview-button").disabled = state.busy || state.previewBusy || !currentSample() || state.source !== "dataset";
     $("#schema-button").disabled = !dbId();
     const test = $("#benchmark-split").value === "test";
     $("#final-eval-label").hidden = !test;
@@ -61,7 +69,7 @@
     $("#benchmark-models").innerHTML = models.map(model => `<label class="check-option"><input class="benchmark-model" type="checkbox" value="${safe(model.id)}" ${model.available === true ? "checked" : "disabled"}><span>${safe(model.label || model.id)}<small>${safe(model.available === true ? model.model || model.provider : model.reason || "Chưa sẵn sàng")}</small></span></label>`).join("");
     const list = presets();
     $("#preset").innerHTML = list.map(preset => `<option value="${safe(preset.id)}">${safe(preset.label || preset.name || preset.id)}</option>`).join("") || '<option value="c0">C0 · Baseline</option>';
-    $("#benchmark-presets").innerHTML = list.map((preset, index) => `<label class="check-option"><input class="benchmark-preset" type="checkbox" value="${safe(preset.id)}" ${index === 0 ? "checked" : ""}><span>${safe(preset.label || preset.name || preset.id)}${preset.description ? `<small>${safe(preset.description)}</small>` : ""}</span></label>`).join("");
+    $("#benchmark-presets").innerHTML = list.map((preset, index) => `<label class="check-option"><input class="benchmark-preset" type="checkbox" value="${safe(preset.id)}" ${cumulativeIds.includes(preset.id) ? "checked" : ""}><span>${safe(preset.label || preset.name || preset.id)}${preset.description ? `<small>${safe(preset.description)}</small>` : ""}</span></label>`).join("");
     $("#model-setup").innerHTML = '<p>Mặc định chọn một model để demo nhanh. Tích thêm model khi cần so sánh; các model chạy lần lượt.</p><p>Qwen base: chạy Ollama và tải đúng model đã đăng ký. Claude Haiku 4.5: thiết lập thông tin AWS và region trong <code>.env</code> (hoặc <code>env</code>), tài khoản cần quyền gọi model trên Amazon Bedrock. Qwen fine-tuned: huấn luyện và đăng ký checkpoint riêng đã có manifest.</p>';
     $("#training-info").innerHTML = `<pre>${safe(pretty(info.training || { state: "Chưa có thông tin checkpoint." }))}</pre>`;
     $("#dataset-details").innerHTML = `<details><summary>Phiên bản, kiểm tra split & khả năng thực thi</summary><pre>${safe(pretty(dataset))}</pre></details>`;
@@ -85,7 +93,7 @@
     const preset = presets().find(item => item.id === $("#preset").value);
     const config = preset?.options || preset || {};
     ["c1", "c2", "c3", "c4"].forEach(key => { $(`#${key}`).checked = config[key] === true; });
-    $("#preset-label").textContent = preset?.id?.toUpperCase() || "C0";
+    $("#preset-label").textContent = $("#compare-mode").value === "cumulative" ? "P0 → P4" : preset?.id?.toUpperCase() || "C0";
   }
   async function loadSamples() {
     const request = ++state.sampleRequest;
@@ -155,14 +163,17 @@
   }
   function renderComparison(data) {
     state.comparison = data;
+    $("#comparison-context").hidden = false;
+    $("#comparison-context").textContent = `KẾT QUẢ ĐANG XEM · ${data.sample?.id || ""} · ${data.sample?.db_id || ""} · ${data.sample?.question || ""} · Run ${data.id || ""}`;
     const results = data.results || [];
+    if (results.length) setPromptData(results, false, data.sample);
     const container = $("#compare-results");
     container.className = results.length ? "results-grid" : "empty-state";
     container.innerHTML = results.length ? results.map(result => {
       const metrics = result.metrics || {};
       const missing = scoreKeys.filter(key => metrics[key] == null);
       const success = metrics.execution_success;
-      return `<article class="result-card"><header class="result-head"><h3>${safe(result.label || modelLabel(result.model_id))}</h3>${statusBadge(result.status)}</header><div class="result-body"><div class="result-label">SQL ĐƯỢC SINH</div><div class="sql-block"><pre>${safe(result.sql || "Chưa sinh được SQL.")}</pre></div>${result.error ? `<div class="result-error">${safe(typeof result.error === "object" ? pretty(result.error) : result.error)}</div>` : ""}<div class="metrics-grid">${scoreKeys.map(key => `<div class="metric" title="${safe(metrics[key] == null ? metricReason(metrics, key) : key === "em" ? "Khớp cấu trúc SQL" : key === "cm" ? "F1 thành phần SQL" : "Chỉ số đánh giá")}"><span>${key.toUpperCase()}</span><strong class="${metrics[key] == null ? "na" : ""}">${score(key, metrics[key])}</strong><small>${metrics[key] == null ? "chưa đo được" : "đã đánh giá"}</small></div>`).join("")}</div><div class="usage-grid"><div>Độ trễ toàn pipeline<b>${duration(metrics.latency_ms)}</b></div><div>Độ trễ SQL<b>${duration(metrics.sql_latency_ms)}</b></div><div>Input / Output tokens<b>${number(metrics.input_tokens)} / ${number(metrics.output_tokens)}</b></div><div>Lượt gọi / Input cached<b>${number(metrics.calls)} / ${number(metrics.cached_input_tokens)}</b></div><div>Chi phí API<b>${money(metrics.cost_usd)}${metrics.cost_usd === 0 ? " · local" : ""}</b></div><div>Thực thi / Cú pháp<b>${success == null ? "N/A" : success ? "Thành công" : "Lỗi"} / ${metrics.syntax_valid == null ? "N/A" : metrics.syntax_valid ? "Hợp lệ" : "Lỗi"}</b></div></div></div><details><summary>Kết quả thực thi</summary>${executionView(result.execution)}</details>${missing.length ? `<details><summary>Vì sao chỉ số là N/A? · ${missing.length} chỉ số</summary>${missing.map(key => `<p><b>${key.toUpperCase()}</b> · ${safe(metricReason(metrics, key))}</p>`).join("")}</details>` : ""}<details><summary>Trace suy luận · ${(result.trace || []).length} bước</summary>${traceView(result.trace || [])}</details></article>`;
+      return `<article class="result-card"><header class="result-head"><h3>${safe((result.label || modelLabel(result.model_id)) + (result.preset_id ? " · " + result.preset_id.toUpperCase() : ""))}</h3>${statusBadge(result.status)}</header><div class="result-body"><div class="result-label">SQL ĐƯỢC SINH</div><div class="sql-block"><pre>${safe(result.sql || "Chưa sinh được SQL.")}</pre></div>${result.error ? `<div class="result-error">${safe(typeof result.error === "object" ? pretty(result.error) : result.error)}</div>` : ""}<div class="metrics-grid">${scoreKeys.map(key => `<div class="metric" title="${safe(metrics[key] == null ? metricReason(metrics, key) : key === "em" ? "Khớp cấu trúc SQL" : key === "cm" ? "F1 thành phần SQL" : "Chỉ số đánh giá")}"><span>${key.toUpperCase()}</span><strong class="${metrics[key] == null ? "na" : ""}">${score(key, metrics[key])}</strong><small>${metrics[key] == null ? "chưa đo được" : "đã đánh giá"}</small></div>`).join("")}</div><div class="usage-grid"><div>Độ trễ toàn pipeline<b>${duration(metrics.latency_ms)}</b></div><div>Độ trễ SQL<b>${duration(metrics.sql_latency_ms)}</b></div><div>Input / Output tokens<b>${number(metrics.input_tokens)} / ${number(metrics.output_tokens)}</b></div><div>Lượt gọi / Input cached<b>${number(metrics.calls)} / ${number(metrics.cached_input_tokens)}</b></div><div>Chi phí API<b>${money(metrics.cost_usd)}${metrics.cost_usd === 0 ? " · local" : ""}</b></div><div>Thực thi / Cú pháp<b>${success == null ? "N/A" : success ? "Thành công" : "Lỗi"} / ${metrics.syntax_valid == null ? "N/A" : metrics.syntax_valid ? "Hợp lệ" : "Lỗi"}</b></div></div></div><details><summary>Kết quả thực thi</summary>${executionView(result.execution)}</details>${missing.length ? `<details><summary>Vì sao chỉ số là N/A? · ${missing.length} chỉ số</summary>${missing.map(key => `<p><b>${key.toUpperCase()}</b> · ${safe(metricReason(metrics, key))}</p>`).join("")}</details>` : ""}<details><summary>Nhật ký lượt gọi & thực thi · ${(result.trace || []).length} bước</summary>${traceView(result.trace || [])}</details></article>`;
     }).join("") : '<h3>Không có kết quả trả về</h3><p>Kiểm tra trạng thái mô hình và thử lại.</p>';
     $$(".result-card", container).forEach((card, index) => {
       const result = results[index];
@@ -182,6 +193,7 @@
   }
   async function compare() {
     if ($("#compare-button").disabled) return;
+    if ($("#compare-mode").value === "cumulative") return startSequence();
     state.busy = true;
     updateButtons();
     $("#compare-button").innerHTML = '<span class="spinner" aria-hidden="true"></span> Đang so sánh…';
@@ -229,7 +241,7 @@
     return row[key] == null ? "0 / không có phép đo" : "chưa có số coverage";
   }
   function renderSummary(summary) {
-    const rows = summary?.rows || [];
+    const rows = [...(summary?.rows || [])].sort((a,b) => a.model_id.localeCompare(b.model_id) || a.preset_id.localeCompare(b.preset_id));
     if (!rows.length) {
       $("#benchmark-chart").className = "chart-empty";
       $("#benchmark-chart").textContent = "Chưa có số liệu benchmark để hiển thị.";
@@ -238,16 +250,22 @@
       return;
     }
     $("#benchmark-chart").className = "bar-chart";
-    $("#benchmark-chart").innerHTML = rows.map(row => `<div class="bar-chart-row"><div class="bar-chart-name"><b>${safe(modelLabel(row.model_id))}</b><br><span class="muted">${safe(row.preset_id)}</span></div><div class="bars">${["em", "cm", "ex"].map(key => `<div class="bar-line"><span class="bar-key">${key.toUpperCase()}</span><div class="bar-track"><div class="bar-fill ${key}" data-width="${numeric(row[key]) ? Math.max(0, Math.min(100, row[key] * 100)) : 0}"></div></div><span class="bar-value">${percentage(row[key])}</span></div>`).join("")}</div></div>`).join("");
+    $("#benchmark-chart").innerHTML = rows.map(row => `<div class="bar-chart-row"><div class="bar-chart-name"><b>${safe(modelLabel(row.model_id))}</b><br><span class="muted">${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</span></div><div class="bars">${["em", "cm", "ex"].map(key => `<div class="bar-line"><span class="bar-key">${key.toUpperCase()}</span><div class="bar-track"><div class="bar-fill ${key}" data-width="${numeric(row[key]) ? Math.max(0, Math.min(100, row[key] * 100)) : 0}"></div></div><span class="bar-value">${percentage(row[key])}</span></div>`).join("")}</div></div>`).join("");
     $$("#benchmark-chart .bar-fill").forEach(bar => { bar.style.width = `${bar.dataset.width}%`; });
     const columns = ["Mô hình / cấu hình", "Mẫu", "EM", "CM", "EX", "TS", "VES", "Thực thi", "Cú pháp", "Latency p50 / p95", "SQL TB", "Input / Output", "Lượt gọi", "API cost"];
-    $("#benchmark-table").innerHTML = `<table><thead><tr>${columns.map(column => `<th>${column}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr><td>${safe(modelLabel(row.model_id))}<small>${safe(row.preset_id)}</small></td><td>${number(row.n)} / ${number(row.expected_n)}<small>đã đo / dự kiến</small></td>${scoreKeys.map(key => `<td>${score(key, row[key])}<small>coverage ${safe(coverage(row, key))}</small></td>`).join("")}<td>${percentage(row.execution_success_rate)}</td><td>${percentage(row.syntax_valid_rate)}</td><td>${duration(row.p50_latency_ms)} / ${duration(row.p95_latency_ms)}</td><td>${duration(row.mean_sql_latency_ms)}</td><td>${number(row.input_tokens)} / ${number(row.output_tokens)}</td><td>${number(row.calls)}</td><td>${money(row.cost_usd)}${row.cost_usd === 0 ? '<small>API local · chưa gồm phần cứng</small>' : ""}</td></tr>`).join("")}</tbody></table>`;
+    $("#benchmark-table").innerHTML = `<table><thead><tr>${columns.map(column => `<th>${column}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr><td>${safe(modelLabel(row.model_id))}<small>${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</small></td><td>${number(row.n)} / ${number(row.expected_n)}<small>đã đo / dự kiến</small></td>${scoreKeys.map(key => `<td>${score(key, row[key])}<small>coverage ${safe(coverage(row, key))}</small></td>`).join("")}<td>${percentage(row.execution_success_rate)}</td><td>${percentage(row.syntax_valid_rate)}</td><td>${duration(row.p50_latency_ms)} / ${duration(row.p95_latency_ms)}</td><td>${duration(row.mean_sql_latency_ms)}</td><td>${number(row.input_tokens)} / ${number(row.output_tokens)}</td><td>${number(row.calls)}</td><td>${money(row.cost_usd)}${row.cost_usd === 0 ? '<small>API local · chưa gồm phần cứng</small>' : ""}</td></tr>`).join("")}</tbody></table>`;
     const table = $("table", $("#benchmark-table"));
     const cachedHead = document.createElement("th");
     cachedHead.textContent = "Input cached";
+    for (const label of ["Lỗi pipeline", "Lượt sửa"]) {
+      const head = document.createElement("th"); head.textContent=label; $("thead tr",table).append(head);
+    }
     $("thead tr", table).append(cachedHead);
     $$("tbody tr", table).forEach((tr, index) => {
       const row = rows[index];
+      for (const key of ["errors", "repair_calls"]) {
+        const cell = document.createElement("td"); cell.textContent = number(row[key]); tr.append(cell);
+      }
       const cachedCell = document.createElement("td");
       cachedCell.innerHTML = `${number(row.cached_input_tokens)}<small>coverage ${safe(coverage(row, "cached_input_tokens"))}</small>`;
       tr.append(cachedCell);
@@ -257,10 +275,19 @@
         cell.title = row[key] == null ? (row.unavailable_reasons?.[key] || []).join("; ") || "Chưa có phép đo hợp lệ." : interval ? `Wilson 95%: ${percentage(interval[0])} – ${percentage(interval[1])}` : "Điểm tính trên các mẫu có phép đo hợp lệ; xem coverage.";
       });
     });
-    $("#difficulty-results").innerHTML = `<details class="difficulty-block"><summary>Độ phủ, lý do N/A & khoảng tin cậy</summary><pre>${safe(pretty(rows.map(row => ({ model_id: row.model_id, preset_id: row.preset_id, errors: row.errors, complete: row.complete, coverage: row.coverage, eligible_n: row.eligible_n, intervals: row.intervals, unavailable_reasons: row.unavailable_reasons, cm_components: row.cm_components }))))}</pre></details>` + rows.filter(row => row.per_difficulty && Object.keys(row.per_difficulty).length).map(row => `<details class="difficulty-block"><summary>Theo độ khó · ${safe(modelLabel(row.model_id))} / ${safe(row.preset_id)}</summary><pre>${safe(pretty(row.per_difficulty))}</pre></details>`).join("") + (summary.notes?.length ? `<p class="tiny-note">${safe(summary.notes.join(" "))}</p>` : "");
+    $("#difficulty-results").innerHTML = `<details class="difficulty-block"><summary>Độ phủ, lý do N/A & khoảng tin cậy</summary><pre>${safe(pretty(rows.map(row => ({ model_id: row.model_id, preset_id: row.preset_id, errors: row.errors, complete: row.complete, coverage: row.coverage, eligible_n: row.eligible_n, intervals: row.intervals, unavailable_reasons: row.unavailable_reasons, cm_components: row.cm_components }))))}</pre></details>` + rows.filter(row => row.per_difficulty && Object.keys(row.per_difficulty).length).map(row => `<details class="difficulty-block"><summary>Theo độ khó · ${safe(modelLabel(row.model_id))} / ${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</summary><div class="table-scroll"><table><thead><tr><th>Độ khó</th><th>Mẫu</th><th>EM</th><th>CM</th><th>EX</th><th>TS</th></tr></thead><tbody>${Object.entries(row.per_difficulty).map(([difficulty,values])=>`<tr><td>${safe(difficulty)}</td><td>${number(values.n)}</td>${["em","cm","ex","ts"].map(key=>`<td>${score(key,values[key])}<small>${number(values[key+"_eligible_n"])}/${number(values.n)} đo được</small></td>`).join("")}</tr>`).join("")}</tbody></table></div></details>`).join("") + (summary.notes?.length ? `<p class="tiny-note">${safe(summary.notes.join(" "))}</p>` : "");
   }
   function renderJob(job) {
     state.job = job;
+    if (!$("#view-benchmark").hidden) history.replaceState(null,"",`#report/${job.id}`);
+    $("#report-context").hidden = false;
+    $("#report-context").textContent = `${job.scope === "full" ? "FULL SPLIT" : "PILOT / TẬP CON"} · ${job.purpose === "prompt_comparison" ? "So sánh prompt một câu hỏi" : "Benchmark"} · ${job.split || "dev"} · ${statusLabels[job.state] || job.state}. Điểm dùng các mẫu đã đo; xem coverage và mẫu số từng nhóm.`;
+    $("#report-manifest").textContent = pretty({run_id:job.id, sample_selection:job.sample_selection, sample_ids:job.sample_ids, presets:job.presets, models:job.models, runtime:job.runtime, dataset_fingerprint:job.dataset_fingerprint, code_sha256:job.code_sha256});
+    $("#report-details-button").disabled = !job.done;
+    if (state.reportDetailsId !== job.id) {
+      $("#report-records").innerHTML = "";
+      $("#report-details-button").textContent = "Xem từng mẫu & prompt";
+    }
     const done = job.done || 0;
     const total = job.total || 0;
     const terminal = !["running", "pending", "queued", "cancel_requested"].includes(job.state);
@@ -299,7 +326,7 @@
     updateButtons();
     notice($("#benchmark-status"), "Đang tạo run và cố định danh sách mẫu…");
     try {
-      const job = await api("benchmark", { split: $("#benchmark-split").value, limit, model_ids: selected(".benchmark-model"), preset_ids: selected(".benchmark-preset"), final_evaluation: $("#benchmark-split").value === "test" && $("#final-evaluation").checked });
+      const job = await api("benchmark", { split: $("#benchmark-split").value, limit, model_ids: selected(".benchmark-model"), preset_ids: selected(".benchmark-preset"), sample_selection: $("#sample-selection").value, final_evaluation: $("#benchmark-split").value === "test" && $("#final-evaluation").checked });
       renderJob({ ...job, done: 0 });
       pollJob(job.id);
       loadRuns();
@@ -315,7 +342,7 @@
   async function loadRuns() {
     try {
       const data = await api("runs");
-      $("#run-history").innerHTML = data.runs?.length ? data.runs.map(run => `<div class="history-row"><div><strong>${safe(run.id)}</strong><small>${safe(run.split || "dev")} · ${safe(run.created_at ? new Date(run.created_at).toLocaleString("vi-VN") : "Không có thời gian")} · ${run.summary?.rows?.length || 0} nhóm kết quả</small></div><div class="history-actions">${statusBadge(run.state)}<button class="button subtle small load-run" data-run="${safe(run.id)}">Xem →</button></div></div>`).join("") : '<p class="muted">Chưa có run được lưu. Benchmark đầu tiên sẽ xuất hiện tại đây.</p>';
+      $("#run-history").innerHTML = data.runs?.length ? data.runs.map(run => `<div class="history-row"><div><strong>${safe(run.id)}</strong><small>${run.scope === "full" ? "FULL" : "PILOT"} · ${run.purpose === "prompt_comparison" ? "Prompt" : "Benchmark"} · ${safe(run.split || "dev")} · ${safe(run.created_at ? new Date(run.created_at).toLocaleString("vi-VN") : "Không có thời gian")} · ${run.done || 0}/${run.total || 0} kết quả</small></div><div class="history-actions">${statusBadge(run.state)}<button class="button subtle small load-run" data-run="${safe(run.id)}">Xem →</button></div></div>`).join("") : '<p class="muted">Chưa có run được lưu. Benchmark đầu tiên sẽ xuất hiện tại đây.</p>';
       $$(".load-run").forEach(button => button.addEventListener("click", () => { clearTimeout(state.poll); state.job = { id: button.dataset.run }; pollJob(button.dataset.run); }));
     } catch (error) { $("#run-history").innerHTML = `<p class="muted">Không thể tải lịch sử: ${safe(error.message)}</p>`; }
   }
@@ -333,6 +360,205 @@
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) { notice($("#benchmark-status"), `Không thể xuất kết quả: ${error.message}`, true); }
   }
+
+  function showView(name) {
+    $$(".nav-tab").forEach(tab => { const active = tab.dataset.view === name; tab.classList.toggle("active", active); tab.setAttribute("aria-pressed", String(active)); });
+    $$(".view").forEach(view => { view.hidden = view.id !== `view-${name}`; });
+    history.replaceState(null, "", name === "benchmark" ? "#report" : name === "method" ? "#method" : "#experiment");
+  }
+  function stagesOf(row) {
+    if (row.kind === "preview") return [{stage:"generate", key:"generate:1", messages:row.messages, output:row.note}];
+    const counts = {};
+    return (row.trace || []).filter(t => t.model_call).map(t => { counts[t.stage] = (counts[t.stage] || 0) + 1; return {...t,key:`${t.stage}:${counts[t.stage]}`}; });
+  }
+  function setPromptData(rows, preview, sample) {
+    promptSample = sample || null;
+    const previousRow = promptData.length ? promptRow() : null;
+    const previousModel = $("#prompt-model").value;
+    const previousStage = $("#prompt-stage").value;
+    const preserve = promptPreview === preview;
+    promptData = rows;
+    promptPreview = preview;
+    $("#prompt-inspector").hidden = false;
+    $("#prompt-kind").textContent = preview ? "XEM TRƯỚC · KHÔNG GỌI MODEL" : "PROMPT THỰC ĐÃ GỬI";
+    $("#prompt-note").textContent = preview ? "C1/C3 chỉ là placeholder. Preview chưa có phản hồi model hoặc lỗi DB. C4 chỉ thêm lượt sửa khi có lỗi." : "Diff so với cấu hình liền trước của cùng model và cùng loại lượt gọi; riêng C4 so với lượt gọi trước trong cùng cấu hình. Xanh: thêm; đỏ: bỏ. C2 chọn schema trước khi gọi C1; C4 dùng lại schema đầy đủ khi sửa. Kế hoạch C3 là đầu ra có cấu trúc.";
+    const models = [...new Set(rows.map(r => r.model_id || "preview"))];
+    $("#prompt-model").innerHTML = models.map(m => `<option value="${safe(m)}">${safe(m === "preview" ? "Xem trước chung" : modelLabel(m))}</option>`).join("");
+    if (preserve && models.includes(previousModel)) $("#prompt-model").value = previousModel;
+    fillPromptPresets();
+    if (preserve && previousRow) {
+      const matching = rows.filter(r => (r.model_id || "preview") === $("#prompt-model").value);
+      const index = matching.findIndex(r => r.preset_id === previousRow.preset_id);
+      if (index >= 0) { $("#prompt-preset").value = String(index); fillPromptStages(); }
+      if (stagesOf(promptRow() || {}).some(t => t.key === previousStage)) { $("#prompt-stage").value = previousStage; renderPromptDiff(); }
+    }
+  }
+  function fillPromptPresets() {
+    const rows = promptData.filter(r => (r.model_id || "preview") === $("#prompt-model").value);
+    $("#prompt-preset").innerHTML = rows.map((r,i) => `<option value="${i}">${safe(r.preset_id?.toUpperCase() || "Tùy chỉnh")}</option>`).join("");
+    fillPromptStages();
+  }
+  function promptRow() { return promptData.filter(r => (r.model_id || "preview") === $("#prompt-model").value)[Number($("#prompt-preset").value)]; }
+  function fillPromptStages() {
+    const row = promptRow();
+    $("#prompt-stage").innerHTML = stagesOf(row || {}).map(t => `<option value="${safe(t.key)}">${safe(t.stage === "generate" ? "Sinh SQL" : t.stage === "c1" ? "C1 · Phân rã" : t.stage === "c3" ? "C3 · Kế hoạch" : "C4 · Sửa lỗi")} · ${safe(t.key.split(":")[1])}</option>`).join("");
+    const generate = stagesOf(row || {}).find(t => t.stage === "generate");
+    if (generate) $("#prompt-stage").value = generate.key;
+    renderPromptDiff();
+  }
+  function messageText(stage) { return (stage?.messages || stage?.prompt || []).map(m => `[${m.role.toUpperCase()}]\n${m.content}`).join("\n\n"); }
+  function lineDiff(before, after) {
+    const a = before.split("\n"), b = after.split("\n");
+    // Bound work for large schemas; whole-message replacement remains exact.
+    if (a.length * b.length > 500000) return [a.map(t => `<span class="diff-remove">− ${safe(t)}</span>`).join(""), b.map(t => `<span class="diff-add">+ ${safe(t)}</span>`).join("")];
+    const grid = Array.from({length:a.length+1}, () => new Uint32Array(b.length+1));
+    for (let i=a.length-1;i>=0;i--) for(let j=b.length-1;j>=0;j--) grid[i][j] = a[i] === b[j] ? grid[i+1][j+1]+1 : Math.max(grid[i+1][j],grid[i][j+1]);
+    const left=[],right=[]; let i=0,j=0;
+    while(i<a.length || j<b.length) {
+      if(i<a.length && j<b.length && a[i]===b[j]) { const line=`<span class="diff-same">  ${safe(a[i]) || " "}</span>`; left.push(line);right.push(line);i++;j++; }
+      else if(i<a.length && (j===b.length || grid[i+1][j]>=grid[i][j+1])) left.push(`<span class="diff-remove">− ${safe(a[i++])}</span>`);
+      else right.push(`<span class="diff-add">+ ${safe(b[j++])}</span>`);
+    }
+    return [left.join(""),right.join("")];
+  }
+  function renderPromptRationale(row, previous, stage) {
+    const host = $("#prompt-rationale");
+    const isP2 = row.preset_id === "p2";
+    const addedC2 = row.options?.c2 && previous && !previous.options?.c2;
+    if (isP2 || addedC2) {
+      const generation = stagesOf(row).find(t => t.stage === "generate");
+      const messages = generation?.messages || row.messages || [];
+      const examples = [];
+      for (let i=0;i<messages.length-1;i++) {
+        const content = messages[i].content || "";
+        const marker = "\nCÂU HỎI: ";
+        if (messages[i].role === "user" && content.startsWith("SCHEMA VÍ DỤ:\n") && content.includes(marker) && messages[i+1].role === "assistant") {
+          let sql = ""; try { sql=JSON.parse(messages[i+1].content).sql || ""; } catch {}
+          examples.push({question:content.slice(content.lastIndexOf(marker)+marker.length),sql});
+        }
+      }
+      const tokens = text => new Set(String(text || "").toLowerCase().replace(/đ/g,"d").normalize("NFD").replace(/\p{M}/gu,"").split(/\s+/u).filter(Boolean));
+      const target=tokens(promptSample?.question);
+      const before=previous?.selected_tables, after=row.selected_tables || [];
+      const removed=(before || []).filter(t=>!after.includes(t));
+      const schemaReason = before ? (removed.length ? `Schema bớt ${removed.length} bảng: ${removed.join(", ")}. Giữ ${after.length}/${before.length} bảng để giảm ngữ cảnh không liên quan và giữ quan hệ JOIN cần thiết.` : `Schema vẫn giữ ${after.length}/${before.length} bảng. Ở mẫu này P2 không thu hẹp schema; phần bổ sung chính nằm ở các ví dụ train.`) : "Không có P1 trong dữ liệu đang xem để xác nhận schema đã thêm/bớt những bảng nào.";
+      host.innerHTML=`<h3>Vì sao P1 → P2 bổ sung đoạn này?</h3><p><b>P1 bổ sung bước phân rã câu hỏi nhưng chưa cung cấp ví dụ cách chuyển yêu cầu thành SQL.</b> P2 bật C2: đưa các cặp câu hỏi–SQL từ train vào ngữ cảnh để model tham khảo cách dùng bảng/cột, JOIN, lọc và tổng hợp. Schema đi kèm mỗi ví dụ giúp phân biệt tên bảng/cột của ví dụ với database đang hỏi.</p><p><b>Schema của câu hỏi hiện tại:</b> ${safe(schemaReason)} Bộ liên kết hiện tại dựa trên từ khóa tên bảng/cột và đường khóa ngoại; đây là heuristic, có thể giữ thừa hoặc bỏ sót bảng.</p><h4>Vì sao chọn các ví dụ đang thấy trong prompt?</h4><p class="tiny-note">Triển khai C2 hiện tại xếp hạng theo Jaccard giữa các từ của câu hỏi sau chuẩn hóa tiếng Việt, chỉ lấy từ train và loại câu hỏi trùng target. Bộ hiện tại tách token theo khoảng trắng, giữ cả dấu câu và từ phổ biến. Từ trùng và điểm dưới đây được tính lại từ prompt đang xem; không phải xác suất SQL đúng. Không dùng SQL tham chiếu của mẫu đích để chọn ví dụ.</p>${examples.length ? examples.map((ex,i)=>{
+        const candidate=tokens(ex.question), shared=[...target].filter(t=>candidate.has(t)).sort();
+        const union=new Set([...target,...candidate]).size;
+        const similarity=shared.length/Math.max(1,union);
+        const patterns=[[/\bJOIN\b/i,"JOIN"],[/\bWHERE\b/i,"lọc WHERE"],[/\bGROUP\s+BY\b/i,"nhóm GROUP BY"],[/\bORDER\s+BY\b/i,"sắp xếp ORDER BY"],[/\bCOUNT\s*\(/i,"đếm COUNT"],[/\bAVG\s*\(/i,"trung bình AVG"],[/\bSUM\s*\(/i,"tổng SUM"],[/\bLIMIT\b/i,"giới hạn LIMIT"]].filter(([re])=>re.test(ex.sql)).map(([,name])=>name);
+        return `<article class="rationale-example"><h4>Ví dụ ${i+1} · ${safe(row.example_ids?.[i] || "ID chưa lưu")} · Jaccard ${number(similarity,3)}</h4><p>${safe(ex.question)}</p><p><b>Căn cứ chọn:</b> ${shared.length}/${union} từ trong giao/hợp. Từ trùng: ${shared.length ? safe(shared.join(", ")) : "không có"}.</p><p><b>Đoạn SQL minh họa:</b> ${patterns.length ? safe(patterns.join(" · ")) : "cấu trúc SQL trong ví dụ bên dưới"}. Đây là nội dung ví dụ, chưa chứng minh nó phù hợp về ngữ nghĩa với câu hỏi hiện tại.</p>${!shared.length ? '<p class="tiny-note">Điểm bằng 0 nhưng bộ retrieval vẫn lấy đủ k ví dụ nếu có ứng viên; các trường hợp bằng điểm được sắp theo ID. Ví dụ này có thể không hữu ích.</p>' : ""}<details><summary>Xem SQL ví dụ thực sự được gửi</summary><pre>${safe(ex.sql || "Không đọc được SQL từ trace.")}</pre></details></article>`;
+      }).join("") : '<p>Không có ví dụ được gửi trong lượt sinh SQL này (có thể k=0, không có ứng viên hoặc pipeline chưa tới bước sinh SQL). Không suy đoán ví dụ đã được dùng từ ID.</p>'}<p class="tiny-note"><b>Đánh đổi:</b> thêm ví dụ làm tăng input tokens; ví dụ gần nhau về từ có thể khác ý nghĩa. Điểm SQL phải được kiểm chứng bằng kết quả thực nghiệm, không suy ra từ việc prompt dài hơn.${stage?.stage === "c1" || stage?.stage === "c3" ? " Lượt gọi đang chọn chỉ nhận schema và nội dung lập kế hoạch; các ví dụ C2 nằm ở prompt Sinh SQL, không được đưa vào lượt gọi này." : ""}</p>`;
+    } else {
+      const calls=stagesOf(row), preview=row.kind === "preview";
+      const generate=calls.find(t=>t.stage === "generate");
+      const targetMessage=generate?.messages?.at(-1)?.content || "";
+      const question=promptSample?.question || "Không có câu hỏi gốc trong dữ liệu đang xem.";
+      const outputBlock=(title,call)=>call ? `<article class="rationale-example"><h4>${safe(title)}</h4><pre>${safe(call.output || call.error || "Chưa có phản hồi được lưu.")}</pre></article>` : '<p class="tiny-note">Chưa có đầu ra thực của bước này; không tạo nội dung minh họa thay cho model.</p>';
+      const facts=`<p><b>Câu hỏi đang xét:</b> ${safe(question)}</p><p><b>Schema ban đầu:</b> ${safe((row.selected_tables || []).join(", ")) || "Chưa có thông tin"}.</p>`;
+      const callInfo=preview ? '<p class="tiny-note">Đây là preview; số lượt gọi bên dưới là dự kiến, chưa có phản hồi hay điểm thực.</p>' : `<p class="tiny-note">Lượt gọi thực được lưu: ${calls.length}. ${numeric(row.metrics?.input_tokens) ? `Tổng input: ${number(row.metrics.input_tokens)} token.` : ""} Không gọi thêm model để viết phần giải thích này.</p>`;
+      if (row.preset_id === "p0") {
+        host.innerHTML=`<h3>Vì sao P0 cần prompt nền này?</h3><p>P0 là mốc đối chiếu: để model chuyển trực tiếp câu hỏi thành SQL bằng instruction và schema, trước khi thêm C1–C4. Mốc này giúp đo các phần bổ sung có ích hay chỉ tăng chi phí.</p>${facts}<div class="rationale-example"><h4>Vì sao có từng phần?</h4><ul><li><b>Instruction:</b> xác định nhiệm vụ Text-to-SQL tiếng Việt và yêu cầu một truy vấn SQLite chỉ đọc.</li><li><b>Schema/khóa:</b> cung cấp tên bảng, cột và quan hệ được phép dùng; giảm việc tự đoán tên.</li><li><b>Câu hỏi:</b> xác định thông tin, điều kiện và cách sắp xếp người dùng yêu cầu.</li><li><b>JSON sql/explanation và quy tắc quote:</b> giúp ứng dụng đọc đầu ra và xử lý tên tiếng Việt có khoảng trắng.</li></ul></div><p><b>Luồng:</b> câu hỏi + schema → sinh SQL → thực thi/đánh giá. Một lượt model nếu tới bước sinh SQL; không có ví dụ train, phân rã, kế hoạch hay lượt sửa.</p><p><b>Giới hạn:</b> model phải tự xử lý toàn bộ yêu cầu trong một lượt; SQL chạy được vẫn có thể sai ý.</p>${callInfo}`;
+      } else if (row.preset_id === "p1") {
+        const decomposition=calls.find(t=>t.stage === "c1");
+        const injected=!preview && targetMessage.includes("CÂU HỎI CON:\n");
+        let parts=[];
+        try { parts=JSON.parse((decomposition?.output || "").replace(/^```[^\n]*\n/,"").replace(/```\s*$/,"" )).subquestions || []; } catch {}
+        const sqlLike=Array.isArray(parts) && parts.some(x=>typeof x === "string" && /^\s*(SELECT|WITH)\b/i.test(x));
+        host.innerHTML=`<h3>Vì sao P0 → P1 thêm câu hỏi con?</h3><p>P0 yêu cầu model sinh SQL ngay. P1 thêm C1 để tách câu hỏi thành tối đa bốn yêu cầu nhỏ, nhằm làm rõ các phần cần lọc, tổng hợp hoặc kết nối trước khi sinh SQL.</p>${facts}<p><b>Đoạn được thêm:</b> một prompt riêng yêu cầu JSON <code>subquestions</code>, sau đó khối <code>CÂU HỎI CON</code> được đưa vào cuối câu hỏi trong prompt Sinh SQL. Câu hỏi gốc và schema vẫn được giữ.</p><p><b>Luồng:</b> câu hỏi/schema → C1 phân rã → câu hỏi gốc + đầu ra C1 → Sinh SQL. Dự kiến hai lượt model nếu bước C1 thành công.</p>${preview ? '<p>Preview chỉ đặt placeholder cho C1; chưa có câu hỏi con thực để khẳng định đã được đưa vào prompt.</p>' : `<p><b>Bằng chứng ở run này:</b> ${decomposition ? "Có lượt gọi C1." : "Không thấy lượt gọi C1 trong trace."} ${Array.isArray(parts) && parts.length ? `Phản hồi đọc được ${parts.length} phần tử subquestions.` : "Chưa đọc được danh sách subquestions hợp lệ."} ${injected ? "Prompt Sinh SQL có khối CÂU HỎI CON." : "Chưa thấy khối CÂU HỎI CON trong prompt Sinh SQL được lưu; không suy đoán bước đã hoàn tất."}</p>${outputBlock("Đầu ra C1 thực được lưu",decomposition)}`}${sqlLike ? '<p><b>Quan sát:</b> có phần tử bắt đầu bằng SELECT/WITH. Model đang trả SQL ở nơi được yêu cầu câu hỏi con; JSON đọc được chưa chứng minh đã phân rã đúng.</p>' : ""}<p><b>Đánh đổi:</b> thêm một lượt gọi và input cho bước sau. Phân rã sai có thể làm SQL sai theo; không có bảo đảm P1 tốt hơn P0.</p>${callInfo}`;
+      } else if (row.preset_id === "p3") {
+        const plan=calls.find(t=>t.stage === "c3");
+        const injected=!preview && targetMessage.includes("KẾ HOẠCH SQL:\n");
+        host.innerHTML=`<h3>Vì sao P2 → P3 thêm kế hoạch SQL?</h3><p>P2 đã có phân rã và ví dụ train nhưng chưa có một bản tổ chức các thao tác SQL dành riêng cho câu hỏi hiện tại. P3 thêm C3 để yêu cầu model chỉ rõ bảng/cột, JOIN, lọc, nhóm và sắp xếp trước khi viết truy vấn cuối.</p>${facts}<p><b>Đoạn được thêm:</b> một prompt lập kế hoạch nhận schema đã chọn, câu hỏi và đầu ra C1. Phản hồi JSON được thêm thành khối <code>KẾ HOẠCH SQL</code> trong prompt Sinh SQL; C1 và các ví dụ C2 vẫn được giữ ở bước sinh.</p><p><b>Luồng:</b> C1 → C3 (câu hỏi + schema + phân rã) → Sinh SQL (thêm ví dụ C2 và kế hoạch). Dự kiến ba lượt model nếu các bước trước thành công. C3 không trực tiếp nhận các cặp ví dụ C2 trong triển khai hiện tại.</p>${preview ? '<p>Preview chỉ có placeholder cho kế hoạch; chưa có đầu ra C3 thực.</p>' : `<p><b>Bằng chứng ở run này:</b> ${plan ? "Có lượt gọi C3." : "Không thấy lượt gọi C3; pipeline có thể chưa tới bước này."} ${injected ? "Prompt Sinh SQL có khối KẾ HOẠCH SQL." : "Chưa thấy kế hoạch được chèn vào prompt Sinh SQL đã lưu."}</p>${outputBlock("Đầu ra C3 thực được lưu",plan)}` }<p><b>Đánh đổi:</b> tăng lượt gọi, token và thời gian; kế hoạch sai có thể hướng truy vấn đi sai. Đây là kế hoạch do model trả công khai theo yêu cầu, không phải suy luận nội bộ và không được coi là đúng chỉ vì là JSON.</p>${callInfo}`;
+      } else if (row.preset_id === "p4") {
+        const repairs=calls.filter(t=>t.stage === "repair");
+        const executions=(row.trace || []).filter(t=>t.stage === "execute");
+        const lastExecution=executions.at(-1)?.execution;
+        const noRepairReason=preview ? "Chưa sinh hay thực thi SQL nên chưa biết có cần sửa hay không." : repairs.length ? `Có ${repairs.length} lượt sửa thực được lưu.` : !generate ? "Pipeline chưa có lượt Sinh SQL; không có căn cứ kết luận SQL đã chạy được." : lastExecution?.status === "ok" ? "SQL chạy được nên không kích hoạt sửa. Điều này chưa chứng minh SQL đúng với câu hỏi." : lastExecution?.status === "schema_only" ? "SQL qua kiểm tra schema-only nên không kích hoạt sửa; chưa có kết quả trên database có dữ liệu." : "Không có lượt sửa được lưu; kiểm tra lỗi/trạng thái pipeline và ngân sách sửa. Không suy ra rằng SQL đã thành công.";
+        host.innerHTML=`<h3>Vì sao P3 → P4 thêm feedback thực thi?</h3><p>P3 có thực thi SQL để kiểm tra, nhưng không gọi model sửa khi có lỗi. P4 thêm C4 để dùng lỗi SQLite hoặc lỗi đọc đầu ra làm thông tin sửa cụ thể, thay vì yêu cầu model đoán lại mà không biết lỗi ở đâu.</p>${facts}<p><b>Đoạn được thêm khi có lỗi:</b> giữ hội thoại trước, bổ sung phản hồi assistant chứa SQL/đầu ra vừa sinh và một user message chứa lỗi cùng yêu cầu sửa câu hỏi gốc. System prompt dùng lại schema đầy đủ để model có cơ hội tìm bảng/cột bị bỏ sót.</p><p><b>Luồng:</b> C1 → C3 → Sinh SQL → thực thi → nếu lỗi thì sửa và thực thi lại. Dự kiến ba lượt ban đầu, thêm tối đa ${number(row.options?.max_repairs ?? 2)} lượt sửa; có thể dừng sớm nếu SQL lặp lại.</p><p><b>Vì sao có/không có đoạn sửa ở mẫu này?</b> ${safe(noRepairReason)}</p>${repairs.map((repair,i)=>{
+          const feedback=[...(repair.messages || [])].reverse().find(m=>m.role === "user")?.content;
+          return `<article class="rationale-example"><h4>Lượt sửa ${i+1} · feedback thực sự được gửi</h4><pre>${safe(feedback || "Không có user message được lưu; không dựng lại lỗi giả định.")}</pre>${outputBlock("Đầu ra model sau yêu cầu sửa",repair)}</article>`;
+        }).join("")}<p><b>Kết quả sau xử lý:</b> ${preview ? "Chưa có kết quả thực." : row.status === "ok" ? "Pipeline báo thành công; xem EX/TS để phân biệt chạy được và trả lời đúng." : `Pipeline còn lỗi hoặc chưa hoàn tất: ${safe(row.error || row.status || "chưa rõ")}.`}</p><p><b>Giới hạn:</b> sửa có thể vẫn thất bại. SQL sai ý nhưng chạy được không tự được sửa bằng gold; không dùng đáp án tham chiếu để tạo feedback.</p>${callInfo}`;
+      } else {
+        host.innerHTML='<h3>Mục đích cấu hình</h3><p>Chọn P0–P4 để xem giải thích cho mức tương ứng, kèm bằng chứng từ prompt/trace đang xem.</p>';
+      }
+    }
+  }
+  function renderPromptDiff() {
+    const row=promptRow(); if(!row) return;
+    const rows=promptData.filter(r => (r.model_id || "preview") === $("#prompt-model").value);
+    const index=rows.indexOf(row), previous=rows[index-1];
+    const key=$("#prompt-stage").value;
+    const stage=stagesOf(row).find(t=>t.key===key);
+    let old=stagesOf(previous || {}).find(t=>t.key===key);
+    let referenceLabel=previous?.preset_id?.toUpperCase() || "Chưa có cấu hình trước";
+    if (stage?.stage === "repair") {
+      const calls=stagesOf(row);old=calls[calls.findIndex(t=>t.key===key)-1];
+      referenceLabel=`${row.preset_id?.toUpperCase() || "Tùy chỉnh"} · Trước lượt sửa`;
+    }
+    const before=old ? messageText(old) : "", after=messageText(stage);
+    const [left,right]=lineDiff(before,after);
+    renderPromptRationale(row,previous,stage);
+    $("#prompt-diff").innerHTML = `<p class="tiny-note">Schema ban đầu: ${safe((row.selected_tables || []).join(" · "))} · ${(row.example_ids || []).length} ví dụ train${row.options?.c4 && !stagesOf(row).some(t=>t.stage==="repair") && !promptPreview ? " · C4: không phát sinh lượt sửa" : ""}</p><div class="prompt-pair"><section class="prompt-pane"><h3>${safe(referenceLabel)} · ${old ? stage?.stage === "repair" ? "Prompt trước" : "Cùng lượt gọi" : "Chưa có lượt gọi tương ứng"}</h3><pre>${left || "—"}</pre></section><section class="prompt-pane"><h3>${safe(row.preset_id?.toUpperCase() || "Tùy chỉnh")} · ${before===after && stage ? "Prompt không đổi" : "Prompt hiện tại"}</h3><pre>${right || "Chưa có lượt gọi model."}</pre></section></div>`;
+    $("#prompt-response").textContent=pretty({output:stage?.output,error:stage?.error,usage:stage?.usage,duration_ms:stage?.duration_ms,prompt_hash:stage?.prompt_hash,stages:row.stages});
+  }
+  async function previewPrompts() {
+    if (!currentSample() || state.source !== "dataset" || state.previewBusy) return;
+    const sampleId=currentSample().id; state.previewBusy=true;
+    $("#prompt-preview-button").disabled=true;
+    try { const data=await api("prompt-preview",{sample_id:sampleId});if(currentSample()?.id!==sampleId || state.source!=="dataset") return;$("#comparison-context").hidden=false;$("#comparison-context").textContent=`XEM TRƯỚC · ${data.sample.id} · ${data.sample.db_id} · ${data.sample.question}`;setPromptData(data.results,true,data.sample);
+      state.comparison=null;$("#compare-export").disabled=true;$("#gold-details").hidden=true;
+      $("#compare-results").className="empty-state";
+      $("#compare-results").innerHTML="<p>Đây là bản xem trước prompt. Chạy so sánh để nhận SQL và chỉ số thực.</p>";
+    }
+    catch(error) { notice($("#compare-status"),error.message,true); }
+    finally {state.previewBusy=false;updateButtons();}
+  }
+  async function startSequence() {
+    state.busy=true;updateButtons();sequenceDone=-1;
+    $("#compare-loading").hidden=false;
+    notice($("#compare-status"),"Đang tạo lượt chạy P0–P4 độc lập trên cùng mẫu dev…");
+    try {
+      const job=await api("benchmark",{split:"dev",sample_ids:[currentSample().id],model_ids:selected(".compare-model"),preset_ids:cumulativeIds});
+      sequenceId=job.id;$("#sequence-cancel").hidden=false;
+      pollSequence(job.id);
+    } catch(error) { finishSequence();notice($("#compare-status"),error.message,true); }
+  }
+  function finishSequence() {state.busy=false;$("#compare-loading").hidden=true;$("#sequence-cancel").hidden=true;updateButtons();loadRuns();}
+  async function pollSequence(id) {
+    clearTimeout(sequenceTimer);
+    try {
+      const job=await api(`job?id=${encodeURIComponent(id)}`);
+      notice($("#compare-status"),`P0–P4: ${job.done}/${job.total} kết quả · ${statusLabels[job.state] || job.state} · ${id}`);
+      if(job.done>0 && sequenceDone!==job.done) {
+        const run=await api(`export?id=${encodeURIComponent(id)}&format=json`);
+        const record=run.records[0];
+        renderComparison({id:run.id,sample:{id:record.sample_id,question:record.question,db_id:record.db_id},results:run.records});
+        sequenceDone=job.done;
+      }
+      if(job.state!=="running") {finishSequence();if(job.error) notice($("#compare-status"),job.error,true);return;}
+    } catch(error) {notice($("#compare-status"),`Chưa đọc được tiến độ: ${error.message}. Đang thử lại…`,true);}
+    sequenceTimer=setTimeout(()=>pollSequence(id),2000);
+  }
+  async function reportRecords() {
+    if(!state.job?.id) return;
+    $("#report-details-button").disabled=true;
+    try {
+      const run=await api(`export?id=${encodeURIComponent(state.job.id)}&format=json`);
+      state.reportDetailsId=run.id;
+      $("#report-details-button").textContent=`Cập nhật từng mẫu & prompt (${run.done}/${run.total})`;
+      $("#report-records").innerHTML=`<table><thead><tr><th>Mẫu / database</th><th>Model / preset</th><th>Trạng thái</th><th>EX / TS</th><th>SQL / lỗi</th><th>Prompt</th></tr></thead><tbody>${run.records.map((r,i)=>`<tr><td>${safe(r.sample_id)}<small>${safe(r.db_id)} · ${safe(r.difficulty)}</small></td><td>${safe(modelLabel(r.model_id))}<small>${safe(r.preset_id)}</small></td><td>${statusBadge(r.status)}</td><td>${score("ex",r.metrics.ex)} / ${score("ts",r.metrics.ts)}</td><td>${safe(r.sql)}<small>${safe(r.error || "")}</small></td><td><button class="button subtle small record-prompts" data-index="${i}">Xem</button></td></tr>`).join("")}</tbody></table>`;
+      $$(".record-prompts").forEach(button=>button.addEventListener("click",()=>{
+        const r=run.records[Number(button.dataset.index)];
+        const rows=run.records.filter(x=>x.sample_id===r.sample_id).sort((a,b)=>a.model_id.localeCompare(b.model_id)||a.preset_id.localeCompare(b.preset_id));
+        renderComparison({id:run.id,sample:{id:r.sample_id,question:r.question,db_id:r.db_id},results:rows});showView("compare");
+        $("#prompt-model").value=r.model_id;fillPromptPresets();
+        const list=rows.filter(x=>x.model_id===r.model_id);$("#prompt-preset").value=String(list.findIndex(x=>x.preset_id===r.preset_id));fillPromptStages();
+        notice($("#compare-status"),`Kết quả đã lưu · ${r.sample_id} · ${r.question}`);
+      }));
+    } catch(error) {notice($("#benchmark-status"),error.message,true);}
+    finally {$("#report-details-button").disabled=false;}
+  }
   async function initialize() {
     try { state.info = await api("info"); renderInfo(); await loadSamples(); }
     catch (error) {
@@ -344,10 +570,11 @@
       $("#retry-info").addEventListener("click", initialize);
     }
     loadRuns();
+    const linkedRun = location.hash.match(/^#report\/([a-f0-9]{32})$/);
+    if (linkedRun) pollJob(linkedRun[1]);
   }
   $$(".nav-tab").forEach(button => button.addEventListener("click", () => {
-    $$(".nav-tab").forEach(tab => { const active = tab === button; tab.classList.toggle("active", active); tab.setAttribute("aria-pressed", String(active)); });
-    $$(".view").forEach(view => { view.hidden = view.id !== `view-${button.dataset.view}`; });
+    showView(button.dataset.view);
     if (button.dataset.view === "benchmark") loadRuns();
   }));
   $$("[data-source]").forEach(button => button.addEventListener("click", () => {
@@ -375,5 +602,25 @@
   $("#refresh-runs").addEventListener("click", loadRuns);
   $("#csv-export").addEventListener("click", () => exportRun("csv"));
   $("#json-export").addEventListener("click", () => exportRun("json"));
+  window.addEventListener("hashchange", () => {
+    const hash = location.hash;
+    const linked = hash.match(/^#report\/([a-f0-9]{32})$/);
+    if (hash === "#report" || linked) {
+      showView("benchmark"); history.replaceState(null,"",hash);
+      loadRuns(); if (linked && state.info) { state.job={id:linked[1]}; pollJob(linked[1]); }
+    } else if (hash === "#method") showView("method");
+    else if (hash === "#experiment") showView("compare");
+  });
+  $("#compare-mode").addEventListener("change",updateButtons);
+  $("#prompt-preview-button").addEventListener("click",previewPrompts);
+  $("#prompt-model").addEventListener("change",fillPromptPresets);
+  $("#prompt-preset").addEventListener("change",fillPromptStages);
+  $("#prompt-stage").addEventListener("change",renderPromptDiff);
+  $("#report-details-button").addEventListener("click",reportRecords);
+  $("#sequence-cancel").addEventListener("click",async()=>{try {if(sequenceId){await api("cancel",{id:sequenceId});notice($("#compare-status"),"Đã yêu cầu dừng sau lượt model hiện tại.");}} catch(error) {notice($("#compare-status"),error.message,true);}});
+  if (/^#report(?:\/[a-f0-9]{32})?$/.test(location.hash)) {
+    const reportHash = location.hash; showView("benchmark"); history.replaceState(null,"",reportHash);
+  }
+  else if (location.hash === "#method") showView("method");
   initialize();
 })();

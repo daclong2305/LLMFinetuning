@@ -20,7 +20,7 @@ class ExecutionAssetTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.source = self.root / 'source.sqlite'
-        with sqlite3.connect(self.source) as con:
+        with closing(sqlite3.connect(self.source)) as con, con:
             con.executescript('''
                 CREATE TABLE parent(id INTEGER PRIMARY KEY, name TEXT);
                 CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id), score REAL);
@@ -40,7 +40,7 @@ class ExecutionAssetTests(unittest.TestCase):
         before = self.source.read_bytes()
         output = self.root / 'target.sqlite'
         adapt_database(self.source, output, self.english, self.vietnamese)
-        with sqlite3.connect(output) as con:
+        with closing(sqlite3.connect(output)) as con, con:
             self.assertEqual(con.execute('SELECT * FROM "cha mẹ" ORDER BY "mã"').fetchall(), [(1, 'Alice'), (2, None)])
             self.assertEqual(con.execute('SELECT typeof("điểm"), "điểm" FROM con ORDER BY "mã"').fetchall(), [('real', 3.5), ('real', 4.5)])
             self.assertEqual(con.execute('PRAGMA foreign_key_check').fetchall(), [])
@@ -54,7 +54,7 @@ class ExecutionAssetTests(unittest.TestCase):
             'column_names_original': [[-1, '*'], [0, 'name'], [0, 'id'], [1, 'score'], [1, 'parent_id'], [1, 'id']]}
         output = self.root / 'swapped.sqlite'
         adapt_database(self.source, output, self.english, target)
-        with sqlite3.connect(output) as con:
+        with closing(sqlite3.connect(output)) as con, con:
             self.assertEqual(con.execute('SELECT name, id FROM child ORDER BY name').fetchall(), [(1, 'Alice'), (2, None)])
 
     def test_bad_schema_alignment_cannot_publish_database(self):

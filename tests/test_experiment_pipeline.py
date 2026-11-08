@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import sqlite3
 import tempfile
@@ -42,7 +43,7 @@ class ExperimentPipelineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Path(self.temp.name)/'shop.sqlite'
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.executescript("CREATE TABLE customers(id INTEGER PRIMARY KEY,name TEXT); INSERT INTO customers VALUES(1,'Lan'),(2,'An');")
         self.store = StoreFixture(self.db)
         self.sample = {'id':'dev-1','split':'dev','db_id':'shop','question':'Tên khách hàng theo mã tăng dần','gold_sql':'SELECT name FROM customers ORDER BY id','difficulty':'easy'}
