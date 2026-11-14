@@ -4,54 +4,224 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>ViSQL Lab · Thí nghiệm Text-to-SQL</title>
+  <title>ViSQL Lab · Thí nghiệm Text-to-SQL tiếng Việt</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,600&display=swap">
   <link rel="stylesheet" href="/experiment.css">
   <script defer src="/experiment.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Đi đến nội dung</a>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="ViSQL Lab, trang chủ"><span class="brand-icon" aria-hidden="true">V<span>_</span></span><span>ViSQL <b>Lab</b><small>TEXT-TO-SQL RESEARCH</small></span></a>
-    <nav class="main-nav" aria-label="Điều hướng"><button class="nav-tab active" data-view="compare" aria-pressed="true">Thử nghiệm prompt</button><button class="nav-tab" data-view="benchmark" aria-pressed="false">Báo cáo thông số</button><button class="nav-tab" data-view="method" aria-pressed="false">Phương pháp</button></nav>
-    <div id="my-container"></div>
+    <a class="brand" href="/" aria-label="ViSQL Lab, trang chủ">ViSQL<span>Lab</span></a>
+    <nav class="main-nav" aria-label="Điều hướng">
+      <button class="nav-tab active" data-view="compare" aria-pressed="true">So sánh</button>
+      <button class="nav-tab" data-view="benchmark" aria-pressed="false">Báo cáo</button>
+      <button class="nav-tab" data-view="method" aria-pressed="false">Phương pháp</button>
+    </nav>
+    <details id="system-status" class="system-status" data-state="checking">
+      <summary><span class="status-dot" aria-hidden="true"></span><span id="model-health">Đang kiểm tra…</span></summary>
+      <dl class="status-panel">
+        <dt>Dữ liệu</dt><dd><span id="dataset-health">Đang kiểm tra…</span> <span id="dataset-badge" class="badge">ViText2SQL</span></dd>
+        <dt>Giao thức</dt><dd>Mặc định đánh giá trên dev. Tập test chỉ dùng cho đánh giá cuối.</dd>
+      </dl>
+    </details>
   </header>
+
   <main id="main">
-    <section class="hero">
-      <div><div class="eyebrow"><span class="live-dot"></span> PHÒNG THÍ NGHIỆM TIẾNG VIỆT</div><h1>Từ câu hỏi đến <span>truy vấn chính xác.</span></h1><p>Quan sát prompt qua P0–P4, đối chiếu Qwen và Claude Haiku trên cùng câu hỏi, rồi báo cáo kết quả từ các lượt chạy đã lưu.</p></div>
-      <div class="hero-tag"><span aria-hidden="true">⌘</span><div>Thí nghiệm có thể tái lập<small>ViText2SQL · C0–C4 · Đánh giá đầy đủ</small></div></div>
-    </section>
     <div id="global-status" class="notice" role="status" hidden></div>
-    <section class="health-strip" aria-label="Trạng thái hệ thống"><div><span class="health-icon">▤</span><div><small>DỮ LIỆU THÍ NGHIỆM</small><strong id="dataset-health">Đang kiểm tra…</strong></div><span id="dataset-badge" class="badge">ViText2SQL</span></div><div><span class="health-icon">◇</span><div><small>MÔ HÌNH SẴN SÀNG</small><strong id="model-health">Đang kiểm tra…</strong></div></div><div><span class="health-icon">◷</span><div><small>GIAO THỨC ĐÁNH GIÁ</small><strong>Dev mặc định · Test tách biệt</strong></div></div></section>
 
     <section id="view-compare" class="view" aria-label="So sánh mô hình">
       <div class="workspace">
-        <aside class="configuration">
-          <section class="panel"><div class="section-heading"><h2><span class="step">01</span> Chọn mô hình</h2><span class="micro">CÙNG MỘT CÂU HỎI</span></div><div id="model-cards" class="model-cards"><p class="muted">Đang tải cấu hình mô hình…</p></div><details class="setup-details"><summary>Thiết lập & thêm mô hình</summary><div id="model-setup"></div><p>Thêm model vào <code>config/experiment.json</code>. Mỗi adapter trả về SQL và usage theo cùng một giao thức.</p></details></section>
-          <section class="panel"><div class="section-heading"><h2><span class="step">02</span> Cấu hình suy luận</h2><span id="preset-label" class="badge">C0</span></div><label class="field-label" for="compare-mode">Chế độ so sánh</label><select id="compare-mode"><option value="cumulative">Cộng dồn P0 → P4</option><option value="single">Một cấu hình tùy chọn</option></select><p class="tiny-note">P0=C0; P1=+C1; P2=+C2; P3=+C3; P4=+C4. Mỗi cấu hình chạy độc lập. C4 chỉ sửa khi có lỗi. Chạy cộng dồn dùng mẫu dev; chọn một cấu hình để dùng train/câu hỏi tự nhập.</p><div id="single-options" hidden><label class="field-label" for="preset">Cấu hình nhanh</label><select id="preset"><option value="c0">C0 · Baseline</option></select><div class="techniques">
-            <label class="technique"><span><b>C1 <span>Phân rã câu hỏi</span></b><small>Tách yêu cầu thành các bước nhỏ</small></span><input id="c1" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
-            <label class="technique"><span><b>C2 <span>Ví dụ & liên kết schema</span></b><small>Truy hồi từ train, giữ cầu khóa ngoại</small></span><input id="c2" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
-            <label class="technique"><span><b>C3 <span>Lập kế hoạch SQL</span></b><small>Phác thảo cấu trúc trước khi sinh SQL</small></span><input id="c3" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
-            <label class="technique"><span><b>C4 <span>Sửa lỗi có phản hồi</span></b><small>Tối đa hai lượt sửa từ lỗi thực thi</small></span><input id="c4" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
-          </div><p class="tiny-note">Áp dụng đồng nhất cho mọi mô hình được chọn.</p></div></section>
-        </aside>
-        <div class="experiment-main">
-          <section class="panel question-panel"><div class="section-heading"><h2><span class="step">03</span> Câu hỏi thí nghiệm</h2><span class="badge neutral">TIẾNG VIỆT</span></div><div class="segmented" aria-label="Nguồn câu hỏi"><button class="active" data-source="dataset" aria-pressed="true">Mẫu ViText2SQL</button><button data-source="custom" aria-pressed="false">Câu hỏi tự nhập</button></div>
-            <p id="database-demo-status" class="tiny-note" hidden></p>
-            <div id="dataset-input"><div class="sample-filter"><div><label class="field-label" for="sample-split">Tập dữ liệu</label><select id="sample-split"><option value="dev">Dev · Phát triển</option><option value="train">Train · Khảo sát</option></select></div><div class="search-field"><label class="field-label" for="sample-search">Tìm câu hỏi hoặc database</label><input id="sample-search" type="search" placeholder="Tìm trong tập dữ liệu…"></div></div><label class="field-label" for="sample-select">Chọn mẫu <span id="sample-count" class="muted"></span></label><select id="sample-select"><option value="">Đang tải mẫu…</option></select><div id="sample-preview" class="question-preview"><p>Chọn một mẫu để bắt đầu so sánh.</p></div></div>
-            <div id="custom-input" hidden><label class="field-label" for="custom-question">Câu hỏi</label><textarea id="custom-question" rows="3" placeholder="Ví dụ: Những khách hàng nào có tổng giá trị đơn hàng cao nhất?"></textarea><label class="field-label" for="custom-db">Database ID</label><input id="custom-db" placeholder="Nhập database ID có trong bộ dữ liệu"><p class="tiny-note">Câu hỏi tự nhập không có SQL tham chiếu: EM, CM, EX, TS và VES sẽ là N/A.</p></div>
-            <div class="question-actions"><button id="prompt-preview-button" class="button subtle" type="button" disabled>Xem trước prompt P0–P4</button><button id="sequence-cancel" class="button danger" type="button" hidden>Dừng lượt chạy</button><button id="schema-button" class="button subtle" type="button">▤ Xem schema</button><button id="compare-button" class="button primary" type="button" disabled>Chạy so sánh <span aria-hidden="true">→</span></button></div><div id="compare-status" role="status" class="inline-status"></div>
-            <details id="schema-details" class="schema-details" hidden><summary>Schema database <span id="schema-db"></span></summary><div id="schema-content"></div></details>
+        <aside class="configuration" aria-label="Cấu hình">
+          <section class="side-block">
+            <h2 class="side-title">Mô hình</h2>
+            <div id="model-cards" class="model-cards"><p class="muted">Đang tải…</p></div>
+            <details class="setup-details">
+              <summary>Thiết lập mô hình</summary>
+              <div id="model-setup"></div>
+              <p>Thêm model vào <code>config/experiment.json</code>. Mỗi adapter trả về SQL và usage theo cùng một giao thức.</p>
+            </details>
           </section>
-          <div id="comparison-context" class="notice" hidden></div><section id="prompt-inspector" class="panel" hidden aria-label="So sánh prompt"><div class="section-heading"><h2>Prompt thay đổi như thế nào?</h2><span id="prompt-kind" class="badge neutral"></span></div><p id="prompt-note" class="tiny-note"></p><div class="prompt-filters"><label>Mô hình<select id="prompt-model"></select></label><label>Cấu hình<select id="prompt-preset"></select></label><label>Lượt gọi<select id="prompt-stage"></select></label></div><section id="prompt-rationale" class="prompt-rationale" aria-live="polite"></section><div id="prompt-diff"></div><details><summary>Phản hồi và usage của lượt gọi</summary><pre id="prompt-response"></pre></details></section>
-          <section class="results-section" aria-label="Kết quả so sánh"><div class="section-heading"><div><h2>Kết quả đối chiếu</h2><p class="section-description">SQL, kết quả thực thi và toàn bộ chi phí suy luận.</p></div><button id="compare-export" class="button subtle small" disabled>Tải JSON ↓</button></div><div id="compare-loading" class="compare-loading" hidden><span class="spinner" aria-hidden="true"></span><div><strong>Đang chạy so sánh…</strong><p>Vui lòng chờ các mô hình xử lý. Kết quả sẽ tự động cập nhật khi hoàn tất.</p></div></div><div id="compare-results" class="empty-state"><div class="empty-icon" aria-hidden="true">⌁</div><h3>Một câu hỏi. Nhiều góc nhìn.</h3><p>Chọn mô hình và câu hỏi, sau đó chạy so sánh.<br>Kết quả thực sẽ xuất hiện cạnh nhau tại đây.</p><div class="empty-metrics"><span>EM / CM</span><span>EX / TS / VES</span><span>LATENCY</span><span>TOKENS & COST</span></div></div><details id="gold-details" class="panel gold-details" hidden><summary>Hiện SQL tham chiếu <span class="muted">· chỉ để kiểm tra sau suy luận</span></summary><pre id="gold-sql"></pre></details></section>
+
+          <section class="side-block">
+            <h2 class="side-title">Chế độ <span id="preset-label" class="tag">C0</span></h2>
+            <label class="sr-only" for="compare-mode">Chế độ so sánh</label>
+            <select id="compare-mode">
+              <option value="cumulative">Cộng dồn P0 → P4</option>
+              <option value="single">Một cấu hình</option>
+            </select>
+            <p class="side-note">P0 = C0, P1 đến P4 lần lượt thêm C1 đến C4. Mỗi cấu hình chạy độc lập. Chế độ cộng dồn dùng mẫu dev; chọn "Một cấu hình" để dùng mẫu train hoặc câu hỏi tự nhập.</p>
+            <div id="single-options" hidden>
+              <label class="field-label" for="preset">Cấu hình nhanh</label>
+              <select id="preset"><option value="c0">C0 · Baseline</option></select>
+              <div class="techniques">
+                <label class="technique"><span><b>C1 Phân rã câu hỏi</b><small>Tách yêu cầu thành các bước nhỏ</small></span><input id="c1" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                <label class="technique"><span><b>C2 Ví dụ và liên kết schema</b><small>Lấy ví dụ từ train, giữ đường khóa ngoại</small></span><input id="c2" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                <label class="technique"><span><b>C3 Lập kế hoạch SQL</b><small>Phác thảo cấu trúc trước khi sinh SQL</small></span><input id="c3" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
+                <label class="technique"><span><b>C4 Sửa lỗi theo phản hồi</b><small>Tối đa hai lượt sửa, chỉ khi thực thi lỗi</small></span><input id="c4" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
+              </div>
+            </div>
+          </section>
+        </aside>
+
+        <div class="experiment-main">
+          <section class="ask" aria-label="Câu hỏi">
+            <div class="ask-top">
+              <div class="segmented" role="group" aria-label="Nguồn câu hỏi">
+                <button class="active" data-source="dataset" aria-pressed="true">Mẫu ViText2SQL</button>
+                <button data-source="custom" aria-pressed="false">Tự nhập</button>
+              </div>
+            </div>
+
+            <div class="ask-row">
+              <div class="ask-input">
+                <div id="dataset-input">
+                  <div class="sample-filter">
+                    <label class="sr-only" for="sample-split">Tập dữ liệu</label>
+                    <select id="sample-split"><option value="dev">Dev</option><option value="train">Train</option></select>
+                    <label class="sr-only" for="sample-search">Tìm câu hỏi hoặc database</label>
+                    <input id="sample-search" type="search" placeholder="Tìm câu hỏi hoặc database">
+                  </div>
+                  <label class="field-label" for="sample-select">Câu hỏi <span id="sample-count" class="muted"></span></label>
+                  <select id="sample-select"><option value="">Đang tải mẫu…</option></select>
+                  <div id="sample-preview" class="question-preview"></div>
+                </div>
+                <div id="custom-input" hidden>
+                  <label class="field-label" for="custom-question">Câu hỏi</label>
+                  <textarea id="custom-question" rows="3" placeholder="Những khách hàng nào có tổng giá trị đơn hàng cao nhất?"></textarea>
+                  <label class="field-label" for="custom-db">Database</label>
+                  <input id="custom-db" placeholder="Database ID có trong bộ dữ liệu">
+                  <p class="side-note">Câu hỏi tự nhập không có SQL tham chiếu nên EM, CM, EX, TS và VES sẽ là N/A.</p>
+                </div>
+              </div>
+              <button id="compare-button" class="button primary run" type="button" disabled>Chạy</button>
+            </div>
+
+            <div class="ask-actions">
+              <button id="schema-button" class="link-button" type="button">Schema</button>
+              <button id="prompt-preview-button" class="link-button" type="button" disabled>Xem trước prompt</button>
+              <button id="sequence-cancel" class="link-button danger" type="button" hidden>Dừng lượt chạy</button>
+              <div id="compare-status" role="status" class="inline-status"></div>
+            </div>
+            <p id="database-demo-status" class="side-note" hidden></p>
+            <details id="schema-details" class="schema-details" hidden><summary>Schema <span id="schema-db"></span></summary><div id="schema-content"></div></details>
+          </section>
+
+          <section class="results-section" aria-label="Kết quả so sánh">
+            <div class="caption-row">
+              <p id="comparison-context" class="caption" hidden></p>
+              <button id="compare-export" class="link-button" disabled>Tải JSON</button>
+            </div>
+            <div id="compare-loading" class="compare-loading" hidden><span class="spinner" aria-hidden="true"></span> Đang chạy các mô hình…</div>
+            <div id="compare-results" class="empty-state"><p>Chọn câu hỏi rồi bấm Chạy.</p></div>
+            <p class="table-note"><b>Ghi chú.</b> Số in đậm là tốt nhất mỗi cột. N/A nghĩa là chưa có phép đo hợp lệ, ví dụ khi thiếu SQL tham chiếu hoặc database có dữ liệu. EX, TS và VES đo bằng giao thức local, không phải điểm leaderboard. Chi phí chỉ gồm API; mô hình local tính $0, chưa gồm phần cứng và huấn luyện. Bấm tên mô hình để xem SQL, kết quả thực thi và nhật ký lượt gọi.</p>
+            <details id="gold-details" class="gold-details" hidden><summary>SQL tham chiếu <span class="muted">(chỉ để đối chiếu sau khi chạy)</span></summary><pre id="gold-sql"></pre></details>
+          </section>
+
+          <section id="prompt-inspector" class="prompt-section" hidden aria-label="So sánh prompt">
+            <div class="section-heading"><h2>Prompt thay đổi như thế nào?</h2><span id="prompt-kind" class="tag"></span></div>
+            <div class="prompt-controls">
+              <label class="pc-model">Mô hình<select id="prompt-model"></select></label>
+              <div class="pc-group"><span class="pc-label" id="preset-steps-label">Cấu hình</span><div id="prompt-preset-steps" class="steps" role="group" aria-labelledby="preset-steps-label"></div><select id="prompt-preset" class="sr-only" tabindex="-1" aria-hidden="true"></select></div>
+              <div class="pc-group"><span class="pc-label" id="stage-tabs-label">Lượt gọi</span><div id="prompt-stage-tabs" class="chips" role="group" aria-labelledby="stage-tabs-label"></div><select id="prompt-stage" class="sr-only" tabindex="-1" aria-hidden="true"></select></div>
+            </div>
+            <div id="prompt-summary" class="pd-summary"></div>
+            <div class="prompt-toolbar">
+              <div class="segmented" role="group" aria-label="Kiểu hiển thị diff"><button type="button" data-diff-mode="split" class="active" aria-pressed="true">Cạnh nhau</button><button type="button" data-diff-mode="unified" aria-pressed="false">Gộp</button></div>
+              <label class="check"><input id="diff-changes-only" type="checkbox" checked> Chỉ hiện phần thay đổi</label>
+            </div>
+            <div id="prompt-diff"></div>
+            <p id="prompt-note" class="table-note"></p>
+            <section id="prompt-rationale" class="prompt-rationale" aria-live="polite"></section>
+            <details><summary>Phản hồi và usage của lượt gọi</summary><pre id="prompt-response"></pre></details>
+          </section>
         </div>
       </div>
     </section>
 
-    <section id="view-benchmark" class="view" hidden aria-label="Benchmark"><div class="benchmark-layout"><section class="panel benchmark-config"><div class="section-heading"><h2>Chạy thí nghiệm báo cáo</h2><span class="badge">BATCH RUN</span></div><p class="section-description">Các mô hình và cấu hình được đo trên cùng danh sách mẫu cố định. Lỗi vẫn được tính vào mẫu số.</p><div id="benchmark-models" class="check-list"></div><div class="two-fields"><div><label class="field-label" for="benchmark-split">Tập đánh giá</label><select id="benchmark-split"><option value="dev">Dev</option><option value="test">Test · Đánh giá cuối</option></select></div><div><label class="field-label" for="benchmark-limit">Số mẫu</label><input id="benchmark-limit" type="number" value="20" min="1" max="10000"></div></div><label class="field-label" for="sample-selection">Cách chọn mẫu</label><select id="sample-selection"><option value="balanced">Pilot cân bằng độ khó và database</option><option value="first">Các mẫu đầu theo thứ tự nguồn</option></select><p class="tiny-note">Pilot là một tập con cố định, không đại diện cho full benchmark. Test chỉ dành cho đánh giá cuối.</p><label class="field-label">Cấu hình cần so sánh</label><div id="benchmark-presets" class="check-list"></div><label id="final-eval-label" class="confirmation" hidden><input id="final-evaluation" type="checkbox"> Tôi chọn test cho đánh giá cuối cùng và xác nhận cấu hình đã chốt.</label><button id="benchmark-button" class="button primary full" disabled>Bắt đầu benchmark →</button><div id="benchmark-status" class="inline-status" role="status"></div><div class="tiny-note">Mô hình API có thể phát sinh chi phí theo cấu hình giá. Chi phí API local bằng 0 không bao gồm phần cứng hoặc huấn luyện.</div></section><div><section class="panel progress-panel"><div class="section-heading"><h2>Tiến độ thực nghiệm</h2><span id="job-state" class="badge neutral">CHƯA CHẠY</span></div><div class="progress-line"><strong id="job-progress">Chưa có benchmark đang theo dõi</strong><span id="job-percent">—</span></div><progress id="job-bar" value="0" max="1" aria-label="Tiến độ benchmark"></progress><div class="progress-footer"><code id="job-id">Một run lưu lại mẫu và dấu vân tay cấu hình.</code><button id="cancel-button" class="button danger small" disabled>Hủy run</button></div></section><section class="panel benchmark-results"><div class="section-heading"><div><h2>Kết quả benchmark</h2><p class="section-description">N/A là chưa có phép đo hợp lệ; coverage cho biết số mẫu có thể đánh giá. EX/TS/VES dùng giao thức local trên dữ liệu Spider ánh xạ schema ViText2SQL; không phải điểm leaderboard chính thức.</p></div><div class="export-actions"><button id="csv-export" class="button subtle small" disabled>CSV ↓</button><button id="json-export" class="button subtle small" disabled>JSON ↓</button></div></div><div id="report-context" class="notice" hidden></div><details class="report-manifest"><summary>Cấu hình và điều kiện chạy</summary><pre id="report-manifest"></pre></details><button id="report-details-button" class="button subtle small" disabled>Xem từng mẫu & prompt</button><div id="report-records" class="table-scroll"></div><div id="benchmark-chart" class="chart-empty">Biểu đồ EM / CM / EX xuất hiện khi có dữ liệu thực.</div><div id="benchmark-table" class="table-scroll"><p class="muted">Chưa có kết quả.</p></div><div id="difficulty-results"></div></section><section class="panel history-panel"><div class="section-heading"><h2>Lịch sử thực nghiệm</h2><button id="refresh-runs" class="button subtle small">Làm mới ↻</button></div><div id="run-history"><p class="muted">Đang tải lịch sử…</p></div></section></div></div></section>
+    <section id="view-benchmark" class="view" hidden aria-label="Báo cáo">
+      <div class="workspace">
+        <aside class="configuration" aria-label="Cấu hình benchmark">
+          <section class="side-block">
+            <h2 class="side-title">Mô hình</h2>
+            <div id="benchmark-models" class="check-list"></div>
+          </section>
+          <section class="side-block">
+            <h2 class="side-title">Cấu hình</h2>
+            <div id="benchmark-presets" class="check-list"></div>
+          </section>
+          <section class="side-block">
+            <h2 class="side-title">Mẫu</h2>
+            <div class="two-fields">
+              <div><label class="field-label" for="benchmark-split">Tập</label><select id="benchmark-split"><option value="dev">Dev</option><option value="test">Test (đánh giá cuối)</option></select></div>
+              <div><label class="field-label" for="benchmark-limit">Số mẫu</label><input id="benchmark-limit" type="number" value="20" min="1" max="10000"></div>
+            </div>
+            <label class="field-label" for="sample-selection">Cách chọn</label>
+            <select id="sample-selection"><option value="balanced">Pilot cân bằng độ khó và database</option><option value="first">Các mẫu đầu theo thứ tự nguồn</option></select>
+            <p class="side-note">Pilot là tập con cố định, không đại diện cho toàn bộ benchmark. Test chỉ dành cho đánh giá cuối.</p>
+            <label id="final-eval-label" class="confirmation" hidden><input id="final-evaluation" type="checkbox"> Tôi dùng test cho đánh giá cuối và cấu hình đã chốt.</label>
+          </section>
+          <button id="benchmark-button" class="button primary full" disabled>Bắt đầu benchmark</button>
+          <div id="benchmark-status" class="inline-status" role="status"></div>
+          <p class="side-note">Mô hình API có thể phát sinh chi phí theo cấu hình giá.</p>
+        </aside>
 
-    <section id="view-method" class="view" hidden aria-label="Phương pháp đánh giá"><div class="method-grid"><section class="panel"><div class="eyebrow">ĐÁNH GIÁ CÓ ĐIỀU KIỆN</div><h2>Đọc chỉ số đúng ngữ cảnh</h2><p class="section-description">Thành công thực thi chỉ cho biết truy vấn chạy được. Độ chính xác cần SQL tham chiếu, database phù hợp và phép so sánh đầy đủ.</p><div id="metric-definitions"></div></section><section class="panel"><div class="eyebrow">DỮ LIỆU & HUẤN LUYỆN</div><h2>Tách biệt trước và sau fine-tuning</h2><p>Qwen base và Qwen fine-tuned là hai model ID độc lập. Chỉ checkpoint đã được xác minh mới hiển thị là mô hình đã huấn luyện.</p><div id="training-info"></div><h3>Nguồn dữ liệu</h3><p><a href="https://github.com/VinAIResearch/ViText2SQL" target="_blank" rel="noopener noreferrer">VinAIResearch / ViText2SQL ↗</a> · dữ liệu syllable-level, phiên bản được cố định để tái lập thí nghiệm.</p><p>Dữ liệu tải riêng ở máy local, không phân phối kèm dashboard. Kiểm tra điều kiện sử dụng của nguồn trước khi chia sẻ hoặc sử dụng lại.</p><div id="dataset-details"></div><h3>Nguyên tắc suy luận</h3><p>C1–C4 là các triển khai đại diện. Ví dụ truy hồi chỉ từ train; SQL tham chiếu của mẫu đích không được đưa vào prompt. Toàn bộ lượt gọi, kể cả lượt lỗi và sửa SQL, đều được ghi nhận.</p></section></div></section>
-    <footer><span><b>ViSQL Lab</b> · Vietnamese Text-to-SQL experiments</span><span>Local workspace <span class="footer-dot">·</span> Reproducible by design</span></footer>
+        <div class="experiment-main">
+          <section class="progress-block" aria-label="Tiến độ">
+            <div class="progress-line"><strong id="job-progress">Chưa có benchmark đang theo dõi</strong><span id="job-state" class="badge neutral">Chưa chạy</span><span id="job-percent">—</span></div>
+            <progress id="job-bar" value="0" max="1" aria-label="Tiến độ benchmark"></progress>
+            <div class="progress-footer"><code id="job-id"></code><button id="cancel-button" class="link-button danger" disabled>Hủy run</button></div>
+          </section>
+
+          <section class="results-section" aria-label="Kết quả benchmark">
+            <div class="caption-row">
+              <p id="report-context" class="caption" hidden></p>
+              <div class="export-actions"><button id="csv-export" class="link-button" disabled>Tải CSV</button><button id="json-export" class="link-button" disabled>Tải JSON</button></div>
+            </div>
+            <div id="benchmark-table" class="table-scroll"><p class="empty-line">Chưa có kết quả.</p></div>
+            <p class="table-note"><b>Ghi chú.</b> Số in đậm là tốt nhất mỗi cột. Điểm tính trên các mẫu có phép đo hợp lệ; dòng nhỏ dưới mỗi điểm là độ phủ (số mẫu đo được trên tổng số mẫu). N/A nghĩa là chưa có phép đo hợp lệ. Lỗi pipeline vẫn tính vào mẫu số. EX, TS và VES dùng giao thức local trên dữ liệu Spider ánh xạ schema ViText2SQL, không phải điểm leaderboard chính thức. Chi phí chỉ gồm API. Di chuột vào một điểm để xem khoảng tin cậy Wilson 95%.</p>
+            <div id="difficulty-results"></div>
+            <div id="benchmark-chart" class="chart-empty"></div>
+            <details class="report-manifest"><summary>Cấu hình và điều kiện chạy</summary><pre id="report-manifest"></pre></details>
+            <button id="report-details-button" class="link-button" disabled>Xem từng mẫu và prompt</button>
+            <div id="report-records" class="table-scroll"></div>
+          </section>
+
+          <section class="history" aria-label="Lịch sử">
+            <div class="section-heading"><h2>Lịch sử</h2><button id="refresh-runs" class="link-button">Làm mới</button></div>
+            <div id="run-history"><p class="muted">Đang tải…</p></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-method" class="view" hidden aria-label="Phương pháp">
+      <article class="method">
+        <h1>Phương pháp đánh giá</h1>
+        <h2>Đọc chỉ số đúng ngữ cảnh</h2>
+        <p>Thực thi thành công chỉ cho biết truy vấn chạy được. Độ chính xác cần SQL tham chiếu, database phù hợp và phép so sánh đầy đủ.</p>
+        <div id="metric-definitions"></div>
+
+        <h2>Cấu hình prompt P0 đến P4</h2>
+        <p>P0 là mốc đối chiếu (C0): model sinh SQL trực tiếp từ instruction, schema và câu hỏi. P1 thêm C1 phân rã câu hỏi. P2 thêm C2 ví dụ từ train và liên kết schema. P3 thêm C3 lập kế hoạch SQL. P4 thêm C4 sửa lỗi theo phản hồi thực thi, tối đa hai lượt và chỉ khi có lỗi. Mỗi cấu hình chạy độc lập trên cùng mẫu.</p>
+
+        <h2>Tách biệt trước và sau fine-tuning</h2>
+        <p>Qwen base và Qwen fine-tuned là hai model ID độc lập. Chỉ checkpoint đã được xác minh mới hiển thị là mô hình đã huấn luyện.</p>
+        <div id="training-info"></div>
+
+        <h2>Nguồn dữ liệu</h2>
+        <p><a href="https://github.com/VinAIResearch/ViText2SQL" target="_blank" rel="noopener noreferrer">VinAIResearch/ViText2SQL</a>, dữ liệu mức âm tiết, phiên bản được cố định để tái lập thí nghiệm. Dữ liệu tải riêng ở máy local, không phân phối kèm dashboard. Kiểm tra điều kiện sử dụng của nguồn trước khi chia sẻ hoặc sử dụng lại.</p>
+        <div id="dataset-details"></div>
+
+        <h2>Nguyên tắc suy luận</h2>
+        <p>C1 đến C4 là các triển khai đại diện. Ví dụ truy hồi chỉ lấy từ train; SQL tham chiếu của mẫu đích không được đưa vào prompt. Mọi lượt gọi, kể cả lượt lỗi và lượt sửa SQL, đều được ghi nhận.</p>
+
+        <h2>Chi phí</h2>
+        <p>Chi phí là chi phí gọi API theo bảng giá trong cấu hình. Mô hình chạy local tính $0 và chưa gồm phần cứng hay huấn luyện. Khi adapter không trả đủ usage, giá trị là N/A; các số đã biết vẫn được lưu.</p>
+      </article>
+    </section>
   </main>
 </body>
 </html>

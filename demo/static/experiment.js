@@ -59,13 +59,14 @@
     $("#dataset-health").textContent = dataset.ready ? `${number(devCount)} mẫu dev · ${dataset.name || "ViText2SQL"}` : "Chưa tải dữ liệu chính thức";
     $("#dataset-badge").className = `badge ${dataset.ready ? "" : "warn"}`;
     $("#dataset-badge").textContent = dataset.ready ? "Sẵn sàng" : "Cần thiết lập";
-    $("#model-health").textContent = `${available.length} / ${models.length} mô hình có thể suy luận`;
+    $("#model-health").textContent = `${available.length}/${models.length} mô hình sẵn sàng`;
+    $("#system-status").dataset.state = dataset.ready && available.length ? "ok" : "warn";
     $("#model-cards").innerHTML = models.length ? models.map(model => {
       const ready = model.available === true;
       const trained = ready && model.trained === true;
       const initial = ready && model.id === available[0]?.id;
-      return `<label class="model-card ${initial ? "selected" : ready ? "" : "unavailable"}"><input class="compare-model" type="checkbox" value="${safe(model.id)}" ${initial ? "checked" : ready ? "" : "disabled"} aria-label="Chọn ${safe(model.label || model.id)}"><span class="model-body"><b>${safe(model.label || model.id)}</b><span class="model-name">${safe(model.model || model.id)}</span><span class="model-row"><span class="provider">${safe(model.provider || "Adapter")} ${trained ? "· checkpoint xác minh" : ""}</span><span class="badge ${ready ? "" : "warn"}">${ready ? "Sẵn sàng" : "Chưa sẵn sàng"}</span></span>${!ready ? `<span class="model-reason">${safe(model.reason || "Chưa đáp ứng điều kiện suy luận.")}</span>` : ""}</span></label>`;
-    }).join("") : '<p class="muted">Chưa đăng ký mô hình. Thêm cấu hình để bắt đầu.</p>';
+      return `<label class="model-card ${initial ? "selected" : ready ? "" : "unavailable"}"><input class="compare-model" type="checkbox" value="${safe(model.id)}" ${initial ? "checked" : ready ? "" : "disabled"} aria-label="Chọn ${safe(model.label || model.id)}"><span class="model-body"><b>${safe(model.label || model.id)}</b><span class="model-name">${safe(model.model || model.id)}${model.provider ? `, ${safe(model.provider)}` : ""}${trained ? ", checkpoint đã xác minh" : ""}</span>${!ready ? `<span class="model-reason">Chưa sẵn sàng: ${safe(model.reason || "chưa đáp ứng điều kiện suy luận.")}</span>` : ""}</span></label>`;
+    }).join("") : '<p class="muted">Chưa có mô hình. Thêm vào config/experiment.json.</p>';
     $("#benchmark-models").innerHTML = models.map(model => `<label class="check-option"><input class="benchmark-model" type="checkbox" value="${safe(model.id)}" ${model.available === true ? "checked" : "disabled"}><span>${safe(model.label || model.id)}<small>${safe(model.available === true ? model.model || model.provider : model.reason || "Chưa sẵn sàng")}</small></span></label>`).join("");
     const list = presets();
     $("#preset").innerHTML = list.map(preset => `<option value="${safe(preset.id)}">${safe(preset.label || preset.name || preset.id)}</option>`).join("") || '<option value="c0">C0 · Baseline</option>';
@@ -106,7 +107,7 @@
       const data = await api(`samples?split=${encodeURIComponent(split)}&limit=100&offset=0&q=${encodeURIComponent(query)}`);
       if (request !== state.sampleRequest) return;
       state.samples = data.items || [];
-      $("#sample-count").textContent = `· ${number(data.total)} mẫu${data.total > state.samples.length ? ` · hiển thị ${state.samples.length} đầu tiên` : ""}`;
+      $("#sample-count").textContent = `(${number(data.total)} mẫu${data.total > state.samples.length ? `, hiển thị ${state.samples.length} đầu tiên` : ""})`;
       $("#sample-select").innerHTML = state.samples.length ? state.samples.map(sample => `<option value="${safe(sample.id)}">${safe(sample.question)}</option>`).join("") : '<option value="">Không có mẫu phù hợp</option>';
       renderSample();
     } catch (error) {
@@ -119,7 +120,7 @@
   }
   function renderSample() {
     const sample = currentSample();
-    $("#sample-preview").innerHTML = sample ? `<p>${safe(sample.question)}</p><div class="sample-meta"><span>▤ ${safe(sample.db_id)}</span><span class="badge neutral">${safe(sample.difficulty || "Chưa phân loại")}</span><span>${safe(sample.id)}</span></div>` : '<p class="muted">Không có mẫu để chọn. Kiểm tra dữ liệu hoặc thay đổi từ khóa tìm kiếm.</p>';
+    $("#sample-preview").innerHTML = sample ? `<p class="question">${safe(sample.question)}</p><p class="sample-meta"><span>Database <b>${safe(sample.db_id)}</b></span><span>Độ khó <b>${safe(sample.difficulty || "chưa phân loại")}</b></span><span>Mã <b>${safe(sample.id)}</b></span></p>` : '<p class="muted">Không có mẫu phù hợp. Đổi từ khóa tìm kiếm hoặc tập dữ liệu.</p>';
     $("#schema-details").hidden = true;
     updateButtons();
   }
@@ -133,11 +134,35 @@
       const result = await api(`schema?db_id=${encodeURIComponent(id)}`);
       $("#schema-db").textContent = result.db_id || id;
       const schema = result.schema || {};
-      $("#schema-content").innerHTML = Object.keys(schema).length ? Object.entries(schema).map(([name, table]) => `<div class="schema-table"><h3>${safe(name)}</h3>${table.description ? `<p class="tiny-note">${safe(table.description)}</p>` : ""}<pre>${safe(table.ddl || pretty(table))}</pre></div>`).join("") : '<p class="muted">Database này chưa có schema.</p>';
+      $("#schema-content").innerHTML = Object.keys(schema).length ? schemaView(schema) : '<p class="muted">Database này chưa có schema.</p>';
       $("#schema-details").hidden = false;
       $("#schema-details").open = true;
     } catch (error) { notice($("#compare-status"), `Không thể tải schema: ${error.message}`, true); }
-    finally { button.textContent = "▤ Xem schema"; updateButtons(); }
+    finally { button.textContent = "Schema"; updateButtons(); }
+  }
+  function schemaView(schema) {
+    const tables = Object.entries(schema);
+    if (!tables.every(([, table]) => Array.isArray(table?.columns))) return tables.map(([name, table]) => `<div class="schema-table"><h3>${safe(name)}</h3><pre>${safe(table?.ddl || pretty(table))}</pre></div>`).join("");
+    const relations = tables.flatMap(([name, table]) => (table.foreign_keys || []).map(fk => ({ from: name, column: fk.from, to: fk.table, target: fk.to })));
+    const cards = tables.map(([name, table]) => {
+      const fks = Object.fromEntries((table.foreign_keys || []).map(fk => [fk.from, fk]));
+      return `<figure class="er-table" data-table="${safe(name)}"><figcaption><span>${safe(name)}</span><small>${table.columns.length} cột</small></figcaption><ul>${table.columns.map(column => {
+        const fk = fks[column.name];
+        return `<li class="${column.pk ? "pk" : ""}${fk ? " fk" : ""}" data-col="${safe(column.name)}"${fk ? ` tabindex="0" data-ref="${safe(fk.table)}" data-ref-col="${safe(fk.to)}"` : ""}><span class="er-name">${safe(column.name)}</span>${fk ? `<span class="er-ref">→ ${safe(fk.table)}.${safe(fk.to)}</span>` : ""}<span class="er-type">${safe(column.type || "")}</span></li>`;
+      }).join("")}</ul>${table.description ? `<p class="tiny-note">${safe(table.description)}</p>` : ""}</figure>`;
+    }).join("");
+    const relationList = relations.length ? `<ul class="er-relations">${relations.map(r => `<li><b>${safe(r.from)}</b>.${safe(r.column)} → <b>${safe(r.to)}</b>.${safe(r.target)}</li>`).join("")}</ul>` : '<p class="tiny-note">Database này không khai báo khóa ngoại.</p>';
+    const ddl = tables.map(([, table]) => table.ddl).filter(Boolean).join("\n\n");
+    return `<div class="er-grid">${cards}</div><p class="table-note"><b>Ghi chú.</b> ${tables.length} bảng, ${relations.length} quan hệ. Cột gạch chân là khóa chính; mũi tên là khóa ngoại trỏ tới bảng và cột đích. Di chuột hoặc focus vào khóa ngoại để làm nổi bảng đích.</p><div class="er-relations-block"><p class="detail-label">Quan hệ khóa ngoại</p>${relationList}</div>${ddl ? `<details class="ddl"><summary>DDL gốc</summary><pre>${safe(ddl)}</pre></details>` : ""}`;
+  }
+  function highlightReference(item, on) {
+    const host = $("#schema-content");
+    $$(".er-table", host).forEach(card => {
+      const target = on && card.dataset.table === item.dataset.ref;
+      card.classList.toggle("target", target);
+      $$("li", card).forEach(li => li.classList.toggle("target", target && li.dataset.col === item.dataset.refCol));
+    });
+    item.classList.toggle("source", on);
   }
   const metricReason = (metrics, key) => {
     const reasons = metrics.unavailable_reasons || metrics.reasons || {};
@@ -161,46 +186,67 @@
     if (!trace || !trace.length) return '<p class="muted">Chưa có trace.</p>';
     return trace.map((stage, index) => `<div class="trace-stage"><h4>${index + 1}. ${safe(stage.stage || stage.name || stage.type || "Suy luận")}</h4><small>${safe(stage.status || "")} ${numeric(stage.latency_ms ?? stage.duration_ms) ? `· ${duration(stage.latency_ms ?? stage.duration_ms)}` : ""}${numeric(stage.input_tokens ?? stage.usage?.input_tokens) ? ` · ${number(stage.input_tokens ?? stage.usage?.input_tokens)} input tokens` : ""}</small>${stage.error ? `<p class="result-error">${safe(stage.error)}</p>` : ""}<details><summary>Prompt, phản hồi & usage</summary><pre>${safe(pretty(stage))}</pre></details></div>`).join("");
   }
+  const comparisonOpen = new Set();
+  const asNumber = value => typeof value === "boolean" ? Number(value) : value;
+  const bestValues = (rows, read) => Object.fromEntries(scoreKeys.map(key => {
+    const values = rows.map(row => asNumber(read(row, key))).filter(numeric);
+    const top = values.length ? Math.max(...values) : null;
+    return [key, values.length > 1 && top > 0 && top !== Math.min(...values) ? top : null];
+  }));
+  const scoreText = (key, value, best) => {
+    const text = score(key, value);
+    return best != null && asNumber(value) === best ? `<strong class="best">${text}</strong>` : text;
+  };
   function renderComparison(data) {
     state.comparison = data;
+    const sample = data.sample || {};
     $("#comparison-context").hidden = false;
-    $("#comparison-context").textContent = `KẾT QUẢ ĐANG XEM · ${data.sample?.id || ""} · ${data.sample?.db_id || ""} · ${data.sample?.question || ""} · Run ${data.id || ""}`;
+    $("#comparison-context").innerHTML = `Bảng 1. Kết quả cho mẫu ${safe(sample.id || "tự nhập")}${sample.db_id ? ` (${safe(sample.db_id)})` : ""}${sample.question ? `<br><span class="caption-detail">${safe(sample.question)}</span>` : ""}`;
     const results = data.results || [];
     if (results.length) setPromptData(results, false, data.sample);
     const container = $("#compare-results");
-    container.className = results.length ? "results-grid" : "empty-state";
-    container.innerHTML = results.length ? results.map(result => {
-      const metrics = result.metrics || {};
-      const missing = scoreKeys.filter(key => metrics[key] == null);
-      const success = metrics.execution_success;
-      return `<article class="result-card"><header class="result-head"><h3>${safe((result.label || modelLabel(result.model_id)) + (result.preset_id ? " · " + result.preset_id.toUpperCase() : ""))}</h3>${statusBadge(result.status)}</header><div class="result-body"><div class="result-label">SQL ĐƯỢC SINH</div><div class="sql-block"><pre>${safe(result.sql || "Chưa sinh được SQL.")}</pre></div>${result.error ? `<div class="result-error">${safe(typeof result.error === "object" ? pretty(result.error) : result.error)}</div>` : ""}<div class="metrics-grid">${scoreKeys.map(key => `<div class="metric" title="${safe(metrics[key] == null ? metricReason(metrics, key) : key === "em" ? "Khớp cấu trúc SQL" : key === "cm" ? "F1 thành phần SQL" : "Chỉ số đánh giá")}"><span>${key.toUpperCase()}</span><strong class="${metrics[key] == null ? "na" : ""}">${score(key, metrics[key])}</strong><small>${metrics[key] == null ? "chưa đo được" : "đã đánh giá"}</small></div>`).join("")}</div><div class="usage-grid"><div>Độ trễ toàn pipeline<b>${duration(metrics.latency_ms)}</b></div><div>Độ trễ SQL<b>${duration(metrics.sql_latency_ms)}</b></div><div>Input / Output tokens<b>${number(metrics.input_tokens)} / ${number(metrics.output_tokens)}</b></div><div>Lượt gọi / Input cached<b>${number(metrics.calls)} / ${number(metrics.cached_input_tokens)}</b></div><div>Chi phí API<b>${money(metrics.cost_usd)}${metrics.cost_usd === 0 ? " · local" : ""}</b></div><div>Thực thi / Cú pháp<b>${success == null ? "N/A" : success ? "Thành công" : "Lỗi"} / ${metrics.syntax_valid == null ? "N/A" : metrics.syntax_valid ? "Hợp lệ" : "Lỗi"}</b></div></div></div><details><summary>Kết quả thực thi</summary>${executionView(result.execution)}</details>${missing.length ? `<details><summary>Vì sao chỉ số là N/A? · ${missing.length} chỉ số</summary>${missing.map(key => `<p><b>${key.toUpperCase()}</b> · ${safe(metricReason(metrics, key))}</p>`).join("")}</details>` : ""}<details><summary>Nhật ký lượt gọi & thực thi · ${(result.trace || []).length} bước</summary>${traceView(result.trace || [])}</details></article>`;
-    }).join("") : '<h3>Không có kết quả trả về</h3><p>Kiểm tra trạng thái mô hình và thử lại.</p>';
-    $$(".result-card", container).forEach((card, index) => {
-      const result = results[index];
-      const metrics = result.metrics || {};
-      const provider = state.info?.models?.find(model => model.id === result.model_id)?.provider;
-      const costCell = $$(".usage-grid b", card)[4];
-      if (costCell) costCell.textContent = `${money(metrics.cost_usd)}${metrics.cost_usd === 0 && provider === "ollama" ? " · API local" : ""}`;
-      const details = document.createElement("details");
-      details.innerHTML = `<summary>Thành phần CM & độ phủ usage</summary><p>Chi phí API không bao gồm phần cứng và huấn luyện. N/A usage nghĩa là adapter chưa trả đủ thông tin; số đã biết vẫn được lưu.</p><pre>${safe(pretty({ cm_components: metrics.cm_components || null, calls: metrics.calls, repair_calls: metrics.repair_calls, input_tokens_coverage: metrics.input_tokens_coverage, output_tokens_coverage: metrics.output_tokens_coverage, cached_input_tokens_coverage: metrics.cached_input_tokens_coverage, cost_usd_coverage: metrics.cost_usd_coverage, known_input_tokens: metrics.known_input_tokens, known_output_tokens: metrics.known_output_tokens, known_cost_usd: metrics.known_cost_usd, options: result.options }))}</pre>`;
-      card.append(details);
-    });
     $("#compare-export").disabled = !results.length;
     const gold = data.sample?.gold_sql;
     $("#gold-details").hidden = !gold;
     $("#gold-details").open = false;
     $("#gold-sql").textContent = gold || "";
+    if (!results.length) {
+      container.className = "empty-state";
+      container.innerHTML = "<p>Không có kết quả trả về. Kiểm tra trạng thái mô hình rồi chạy lại.</p>";
+      return;
+    }
+    container.className = "results-table table-scroll";
+    const best = bestValues(results, (result, key) => result.metrics?.[key]);
+    const head = ["Mô hình", "Cấu hình", "Trạng thái", ...scoreKeys.map(key => key.toUpperCase()), "Thời gian", "Token vào / ra", "Chi phí"];
+    container.innerHTML = `<table><thead><tr>${head.map((label, index) => `<th scope="col"${index > 2 ? ' class="num"' : ""}>${label}</th>`).join("")}</tr></thead><tbody>${results.map((result, index) => {
+      const metrics = result.metrics || {};
+      const key = `${result.model_id}|${result.preset_id || ""}`;
+      const open = comparisonOpen.has(key) || results.length === 1;
+      const provider = state.info?.models?.find(model => model.id === result.model_id)?.provider;
+      const missing = scoreKeys.filter(item => metrics[item] == null);
+      const success = metrics.execution_success;
+      const cost = `${money(metrics.cost_usd)}${metrics.cost_usd === 0 && provider === "ollama" ? " (local)" : ""}`;
+      const cells = scoreKeys.map(item => metrics[item] == null ? `<td class="num na" title="${safe(metricReason(metrics, item))}">N/A</td>` : `<td class="num">${scoreText(item, metrics[item], best[item])}</td>`).join("");
+      return `<tr class="result-row${open ? " open" : ""}"><td><button class="row-toggle" type="button" aria-expanded="${open}" aria-controls="result-detail-${index}" data-key="${safe(key)}"><span>${safe(result.label || modelLabel(result.model_id))}</span></button></td><td>${safe(result.preset_id ? result.preset_id.toUpperCase() : "Tùy chỉnh")}</td><td>${statusBadge(result.status)}</td>${cells}<td class="num">${duration(metrics.latency_ms)}</td><td class="num">${number(metrics.input_tokens)} / ${number(metrics.output_tokens)}</td><td class="num">${cost}</td></tr><tr class="result-detail" id="result-detail-${index}"${open ? "" : " hidden"}><td colspan="${head.length}"><div class="detail-inner"><div><p class="detail-label">SQL được sinh</p><div class="sql-block"><pre>${safe(result.sql || "Chưa sinh được SQL.")}</pre></div></div>${result.error ? `<div class="result-error">${safe(typeof result.error === "object" ? pretty(result.error) : result.error)}</div>` : ""}<div class="usage-grid"><div>Thời gian toàn pipeline<b>${duration(metrics.latency_ms)}</b></div><div>Thời gian thực thi SQL<b>${duration(metrics.sql_latency_ms)}</b></div><div>Lượt gọi / input cached<b>${number(metrics.calls)} / ${number(metrics.cached_input_tokens)}</b></div><div>Thực thi / cú pháp<b>${success == null ? "N/A" : success ? "Thành công" : "Lỗi"} / ${metrics.syntax_valid == null ? "N/A" : metrics.syntax_valid ? "Hợp lệ" : "Lỗi"}</b></div></div><details><summary>Kết quả thực thi</summary>${executionView(result.execution)}</details>${missing.length ? `<details><summary>Vì sao ${missing.length} chỉ số là N/A</summary>${missing.map(item => `<p><b>${item.toUpperCase()}</b>: ${safe(metricReason(metrics, item))}</p>`).join("")}</details>` : ""}<details><summary>Nhật ký lượt gọi và thực thi (${(result.trace || []).length} bước)</summary>${traceView(result.trace || [])}</details><details><summary>Thành phần CM và độ phủ usage</summary><p class="tiny-note">N/A ở usage nghĩa là adapter chưa trả đủ thông tin; các số đã biết vẫn được lưu.</p><pre>${safe(pretty({ cm_components: metrics.cm_components || null, calls: metrics.calls, repair_calls: metrics.repair_calls, input_tokens_coverage: metrics.input_tokens_coverage, output_tokens_coverage: metrics.output_tokens_coverage, cached_input_tokens_coverage: metrics.cached_input_tokens_coverage, cost_usd_coverage: metrics.cost_usd_coverage, known_input_tokens: metrics.known_input_tokens, known_output_tokens: metrics.known_output_tokens, known_cost_usd: metrics.known_cost_usd, options: result.options }))}</pre></details></div></td></tr>`;
+    }).join("")}</tbody></table>`;
+    $$(".row-toggle", container).forEach(button => button.addEventListener("click", () => {
+      const open = button.getAttribute("aria-expanded") !== "true";
+      button.setAttribute("aria-expanded", String(open));
+      button.closest("tr").classList.toggle("open", open);
+      $(`#${button.getAttribute("aria-controls")}`).hidden = !open;
+      if (open) comparisonOpen.add(button.dataset.key); else comparisonOpen.delete(button.dataset.key);
+    }));
   }
   async function compare() {
     if ($("#compare-button").disabled) return;
     if ($("#compare-mode").value === "cumulative") return startSequence();
     state.busy = true;
     updateButtons();
-    $("#compare-button").innerHTML = '<span class="spinner" aria-hidden="true"></span> Đang so sánh…';
+    $("#compare-button").innerHTML = '<span class="spinner" aria-hidden="true"></span> Đang chạy';
     $("#compare-button").setAttribute("aria-busy", "true");
     $("#compare-loading").hidden = false;
     $("#compare-results").setAttribute("aria-busy", "true");
-    notice($("#compare-status"), "Các mô hình đang xử lý cùng câu hỏi. Thời gian chạy phụ thuộc mô hình và C1–C4.");
+    notice($("#compare-status"), "Thời gian chạy phụ thuộc mô hình và các kỹ thuật C1–C4 đang bật.");
     const body = { model_ids: selected(".compare-model"), options: options() };
     if (state.source === "dataset") body.sample_id = currentSample().id;
     else { body.question = $("#custom-question").value.trim(); body.db_id = dbId(); }
@@ -212,7 +258,7 @@
     } catch (error) { notice($("#compare-status"), `Không thể so sánh: ${error.message}`, true); }
     finally {
       state.busy = false;
-      $("#compare-button").innerHTML = 'Chạy so sánh <span aria-hidden="true">→</span>';
+      $("#compare-button").textContent = "Chạy";
       $("#compare-button").setAttribute("aria-busy", "false");
       $("#compare-loading").hidden = true;
       $("#compare-results").setAttribute("aria-busy", "false");
@@ -244,16 +290,17 @@
     const rows = [...(summary?.rows || [])].sort((a,b) => a.model_id.localeCompare(b.model_id) || a.preset_id.localeCompare(b.preset_id));
     if (!rows.length) {
       $("#benchmark-chart").className = "chart-empty";
-      $("#benchmark-chart").textContent = "Chưa có số liệu benchmark để hiển thị.";
-      $("#benchmark-table").innerHTML = '<p class="muted">Chưa có kết quả. Tiến độ và kết quả một phần sẽ cập nhật tự động.</p>';
+      $("#benchmark-chart").textContent = "";
+      $("#benchmark-table").innerHTML = '<p class="empty-line">Chưa có kết quả. Tiến độ và kết quả một phần sẽ tự cập nhật.</p>';
       $("#difficulty-results").innerHTML = "";
       return;
     }
     $("#benchmark-chart").className = "bar-chart";
-    $("#benchmark-chart").innerHTML = rows.map(row => `<div class="bar-chart-row"><div class="bar-chart-name"><b>${safe(modelLabel(row.model_id))}</b><br><span class="muted">${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</span></div><div class="bars">${["em", "cm", "ex"].map(key => `<div class="bar-line"><span class="bar-key">${key.toUpperCase()}</span><div class="bar-track"><div class="bar-fill ${key}" data-width="${numeric(row[key]) ? Math.max(0, Math.min(100, row[key] * 100)) : 0}"></div></div><span class="bar-value">${percentage(row[key])}</span></div>`).join("")}</div></div>`).join("");
+    const best = bestValues(rows, (row, key) => row[key]);
+    $("#benchmark-chart").innerHTML = '<p class="caption">Hình 1. EM, CM và EX theo mô hình và cấu hình</p>' + rows.map(row => `<div class="bar-chart-row"><div class="bar-chart-name"><b>${safe(modelLabel(row.model_id))}</b><br><span class="muted">${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</span></div><div class="bars">${["em", "cm", "ex"].map(key => `<div class="bar-line"><span class="bar-key">${key.toUpperCase()}</span><div class="bar-track"><div class="bar-fill ${key}" data-width="${numeric(row[key]) ? Math.max(0, Math.min(100, row[key] * 100)) : 0}"></div></div><span class="bar-value">${percentage(row[key])}</span></div>`).join("")}</div></div>`).join("");
     $$("#benchmark-chart .bar-fill").forEach(bar => { bar.style.width = `${bar.dataset.width}%`; });
-    const columns = ["Mô hình / cấu hình", "Mẫu", "EM", "CM", "EX", "TS", "VES", "Thực thi", "Cú pháp", "Latency p50 / p95", "SQL TB", "Input / Output", "Lượt gọi", "API cost"];
-    $("#benchmark-table").innerHTML = `<table><thead><tr>${columns.map(column => `<th>${column}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr><td>${safe(modelLabel(row.model_id))}<small>${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</small></td><td>${number(row.n)} / ${number(row.expected_n)}<small>đã đo / dự kiến</small></td>${scoreKeys.map(key => `<td>${score(key, row[key])}<small>coverage ${safe(coverage(row, key))}</small></td>`).join("")}<td>${percentage(row.execution_success_rate)}</td><td>${percentage(row.syntax_valid_rate)}</td><td>${duration(row.p50_latency_ms)} / ${duration(row.p95_latency_ms)}</td><td>${duration(row.mean_sql_latency_ms)}</td><td>${number(row.input_tokens)} / ${number(row.output_tokens)}</td><td>${number(row.calls)}</td><td>${money(row.cost_usd)}${row.cost_usd === 0 ? '<small>API local · chưa gồm phần cứng</small>' : ""}</td></tr>`).join("")}</tbody></table>`;
+    const columns = ["Mô hình / cấu hình", "Mẫu", "EM", "CM", "EX", "TS", "VES", "Thực thi", "Cú pháp", "Thời gian p50 / p95", "SQL trung bình", "Token vào / ra", "Lượt gọi", "Chi phí API"];
+    $("#benchmark-table").innerHTML = `<table><thead><tr>${columns.map(column => `<th>${column}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr><td>${safe(modelLabel(row.model_id))}<small>${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</small></td><td>${number(row.n)} / ${number(row.expected_n)}<small>đã đo / dự kiến</small></td>${scoreKeys.map(key => `<td class="num${row[key] == null ? " na" : ""}">${scoreText(key, row[key], best[key])}<small>${safe(coverage(row, key))}</small></td>`).join("")}<td>${percentage(row.execution_success_rate)}</td><td>${percentage(row.syntax_valid_rate)}</td><td>${duration(row.p50_latency_ms)} / ${duration(row.p95_latency_ms)}</td><td>${duration(row.mean_sql_latency_ms)}</td><td>${number(row.input_tokens)} / ${number(row.output_tokens)}</td><td>${number(row.calls)}</td><td>${money(row.cost_usd)}${row.cost_usd === 0 ? "<small>local</small>" : ""}</td></tr>`).join("")}</tbody></table>`;
     const table = $("table", $("#benchmark-table"));
     const cachedHead = document.createElement("th");
     cachedHead.textContent = "Input cached";
@@ -267,7 +314,7 @@
         const cell = document.createElement("td"); cell.textContent = number(row[key]); tr.append(cell);
       }
       const cachedCell = document.createElement("td");
-      cachedCell.innerHTML = `${number(row.cached_input_tokens)}<small>coverage ${safe(coverage(row, "cached_input_tokens"))}</small>`;
+      cachedCell.innerHTML = `${number(row.cached_input_tokens)}<small>${safe(coverage(row, "cached_input_tokens"))}</small>`;
       tr.append(cachedCell);
       scoreKeys.forEach((key, offset) => {
         const cell = tr.children[offset + 2];
@@ -275,24 +322,24 @@
         cell.title = row[key] == null ? (row.unavailable_reasons?.[key] || []).join("; ") || "Chưa có phép đo hợp lệ." : interval ? `Wilson 95%: ${percentage(interval[0])} – ${percentage(interval[1])}` : "Điểm tính trên các mẫu có phép đo hợp lệ; xem coverage.";
       });
     });
-    $("#difficulty-results").innerHTML = `<details class="difficulty-block"><summary>Độ phủ, lý do N/A & khoảng tin cậy</summary><pre>${safe(pretty(rows.map(row => ({ model_id: row.model_id, preset_id: row.preset_id, errors: row.errors, complete: row.complete, coverage: row.coverage, eligible_n: row.eligible_n, intervals: row.intervals, unavailable_reasons: row.unavailable_reasons, cm_components: row.cm_components }))))}</pre></details>` + rows.filter(row => row.per_difficulty && Object.keys(row.per_difficulty).length).map(row => `<details class="difficulty-block"><summary>Theo độ khó · ${safe(modelLabel(row.model_id))} / ${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</summary><div class="table-scroll"><table><thead><tr><th>Độ khó</th><th>Mẫu</th><th>EM</th><th>CM</th><th>EX</th><th>TS</th></tr></thead><tbody>${Object.entries(row.per_difficulty).map(([difficulty,values])=>`<tr><td>${safe(difficulty)}</td><td>${number(values.n)}</td>${["em","cm","ex","ts"].map(key=>`<td>${score(key,values[key])}<small>${number(values[key+"_eligible_n"])}/${number(values.n)} đo được</small></td>`).join("")}</tr>`).join("")}</tbody></table></div></details>`).join("") + (summary.notes?.length ? `<p class="tiny-note">${safe(summary.notes.join(" "))}</p>` : "");
+    $("#difficulty-results").innerHTML = `<details class="difficulty-block"><summary>Độ phủ, lý do N/A và khoảng tin cậy</summary><pre>${safe(pretty(rows.map(row => ({ model_id: row.model_id, preset_id: row.preset_id, errors: row.errors, complete: row.complete, coverage: row.coverage, eligible_n: row.eligible_n, intervals: row.intervals, unavailable_reasons: row.unavailable_reasons, cm_components: row.cm_components }))))}</pre></details>` + rows.filter(row => row.per_difficulty && Object.keys(row.per_difficulty).length).map(row => `<details class="difficulty-block"><summary>Theo độ khó: ${safe(modelLabel(row.model_id))}, ${safe(presets().find(p => p.id === row.preset_id)?.label || row.preset_id)}</summary><div class="table-scroll"><table><thead><tr><th>Độ khó</th><th>Mẫu</th><th>EM</th><th>CM</th><th>EX</th><th>TS</th></tr></thead><tbody>${Object.entries(row.per_difficulty).map(([difficulty,values])=>`<tr><td>${safe(difficulty)}</td><td>${number(values.n)}</td>${["em","cm","ex","ts"].map(key=>`<td>${score(key,values[key])}<small>${number(values[key+"_eligible_n"])}/${number(values.n)} đo được</small></td>`).join("")}</tr>`).join("")}</tbody></table></div></details>`).join("") + (summary.notes?.length ? `<p class="table-note">${safe(summary.notes.join(" "))}</p>` : "");
   }
   function renderJob(job) {
     state.job = job;
     if (!$("#view-benchmark").hidden) history.replaceState(null,"",`#report/${job.id}`);
     $("#report-context").hidden = false;
-    $("#report-context").textContent = `${job.scope === "full" ? "FULL SPLIT" : "PILOT / TẬP CON"} · ${job.purpose === "prompt_comparison" ? "So sánh prompt một câu hỏi" : "Benchmark"} · ${job.split || "dev"} · ${statusLabels[job.state] || job.state}. Điểm dùng các mẫu đã đo; xem coverage và mẫu số từng nhóm.`;
+    $("#report-context").innerHTML = `Bảng 2. ${job.purpose === "prompt_comparison" ? "So sánh prompt trên một câu hỏi" : "Kết quả benchmark"} trên tập ${safe(job.split || "dev")}, ${job.scope === "full" ? "toàn bộ split" : "tập con pilot"}<br><span class="caption-detail">Trạng thái: ${safe(statusLabels[job.state] || job.state)}</span>`;
     $("#report-manifest").textContent = pretty({run_id:job.id, sample_selection:job.sample_selection, sample_ids:job.sample_ids, presets:job.presets, models:job.models, runtime:job.runtime, dataset_fingerprint:job.dataset_fingerprint, code_sha256:job.code_sha256});
     $("#report-details-button").disabled = !job.done;
     if (state.reportDetailsId !== job.id) {
       $("#report-records").innerHTML = "";
-      $("#report-details-button").textContent = "Xem từng mẫu & prompt";
+      $("#report-details-button").textContent = "Xem từng mẫu và prompt";
     }
     const done = job.done || 0;
     const total = job.total || 0;
     const terminal = !["running", "pending", "queued", "cancel_requested"].includes(job.state);
     $("#job-state").outerHTML = statusBadge(job.state).replace('<span class="', '<span id="job-state" class="');
-    $("#job-progress").textContent = `${number(done)} / ${number(total)} lượt thí nghiệm${job.state === "cancelled" ? " · kết quả một phần" : ""}`;
+    $("#job-progress").textContent = `${number(done)}/${number(total)} lượt thí nghiệm${job.state === "cancelled" ? ", kết quả một phần" : ""}`;
     $("#job-percent").textContent = total ? percentage(done / total) : "—";
     $("#job-bar").max = Math.max(1, total);
     $("#job-bar").value = done;
@@ -342,7 +389,7 @@
   async function loadRuns() {
     try {
       const data = await api("runs");
-      $("#run-history").innerHTML = data.runs?.length ? data.runs.map(run => `<div class="history-row"><div><strong>${safe(run.id)}</strong><small>${run.scope === "full" ? "FULL" : "PILOT"} · ${run.purpose === "prompt_comparison" ? "Prompt" : "Benchmark"} · ${safe(run.split || "dev")} · ${safe(run.created_at ? new Date(run.created_at).toLocaleString("vi-VN") : "Không có thời gian")} · ${run.done || 0}/${run.total || 0} kết quả</small></div><div class="history-actions">${statusBadge(run.state)}<button class="button subtle small load-run" data-run="${safe(run.id)}">Xem →</button></div></div>`).join("") : '<p class="muted">Chưa có run được lưu. Benchmark đầu tiên sẽ xuất hiện tại đây.</p>';
+      $("#run-history").innerHTML = data.runs?.length ? data.runs.map(run => `<div class="history-row"><div><strong>${safe(run.id)}</strong><small>${run.scope === "full" ? "FULL" : "PILOT"} · ${run.purpose === "prompt_comparison" ? "Prompt" : "Benchmark"} · ${safe(run.split || "dev")} · ${safe(run.created_at ? new Date(run.created_at).toLocaleString("vi-VN") : "Không có thời gian")} · ${run.done || 0}/${run.total || 0} kết quả</small></div><div class="history-actions">${statusBadge(run.state)}<button class="button subtle small load-run" data-run="${safe(run.id)}">Xem</button></div></div>`).join("") : '<p class="muted">Chưa có lượt chạy nào được lưu.</p>';
       $$(".load-run").forEach(button => button.addEventListener("click", () => { clearTimeout(state.poll); state.job = { id: button.dataset.run }; pollJob(button.dataset.run); }));
     } catch (error) { $("#run-history").innerHTML = `<p class="muted">Không thể tải lịch sử: ${safe(error.message)}</p>`; }
   }
@@ -380,7 +427,7 @@
     promptData = rows;
     promptPreview = preview;
     $("#prompt-inspector").hidden = false;
-    $("#prompt-kind").textContent = preview ? "XEM TRƯỚC · KHÔNG GỌI MODEL" : "PROMPT THỰC ĐÃ GỬI";
+    $("#prompt-kind").textContent = preview ? "Xem trước, chưa gọi model" : "Prompt đã gửi";
     $("#prompt-note").textContent = preview ? "C1/C3 chỉ là placeholder. Preview chưa có phản hồi model hoặc lỗi DB. C4 chỉ thêm lượt sửa khi có lỗi." : "Diff so với cấu hình liền trước của cùng model và cùng loại lượt gọi; riêng C4 so với lượt gọi trước trong cùng cấu hình. Xanh: thêm; đỏ: bỏ. C2 chọn schema trước khi gọi C1; C4 dùng lại schema đầy đủ khi sửa. Kế hoạch C3 là đầu ra có cấu trúc.";
     const models = [...new Set(rows.map(r => r.model_id || "preview"))];
     $("#prompt-model").innerHTML = models.map(m => `<option value="${safe(m)}">${safe(m === "preview" ? "Xem trước chung" : modelLabel(m))}</option>`).join("");
@@ -401,25 +448,73 @@
   function promptRow() { return promptData.filter(r => (r.model_id || "preview") === $("#prompt-model").value)[Number($("#prompt-preset").value)]; }
   function fillPromptStages() {
     const row = promptRow();
-    $("#prompt-stage").innerHTML = stagesOf(row || {}).map(t => `<option value="${safe(t.key)}">${safe(t.stage === "generate" ? "Sinh SQL" : t.stage === "c1" ? "C1 · Phân rã" : t.stage === "c3" ? "C3 · Kế hoạch" : "C4 · Sửa lỗi")} · ${safe(t.key.split(":")[1])}</option>`).join("");
+    $("#prompt-stage").innerHTML = stagesOf(row || {}).map(t => `<option value="${safe(t.key)}">${safe(t.stage === "generate" ? "Sinh SQL" : t.stage === "c1" ? "C1 Phân rã" : t.stage === "c3" ? "C3 Kế hoạch" : "C4 Sửa lỗi")}${t.key.split(":")[1] !== "1" ? ` (lượt ${safe(t.key.split(":")[1])})` : ""}</option>`).join("");
     const generate = stagesOf(row || {}).find(t => t.stage === "generate");
     if (generate) $("#prompt-stage").value = generate.key;
     renderPromptDiff();
   }
   function messageText(stage) { return (stage?.messages || stage?.prompt || []).map(m => `[${m.role.toUpperCase()}]\n${m.content}`).join("\n\n"); }
-  function lineDiff(before, after) {
+  const diffView = { mode: matchMedia("(max-width: 760px)").matches ? "unified" : "split", changesOnly: true, openFolds: new Set(), key: "" };
+  function diffOps(before, after) {
     const a = before.split("\n"), b = after.split("\n");
-    // Bound work for large schemas; whole-message replacement remains exact.
-    if (a.length * b.length > 500000) return [a.map(t => `<span class="diff-remove">− ${safe(t)}</span>`).join(""), b.map(t => `<span class="diff-add">+ ${safe(t)}</span>`).join("")];
-    const grid = Array.from({length:a.length+1}, () => new Uint32Array(b.length+1));
-    for (let i=a.length-1;i>=0;i--) for(let j=b.length-1;j>=0;j--) grid[i][j] = a[i] === b[j] ? grid[i+1][j+1]+1 : Math.max(grid[i+1][j],grid[i][j+1]);
-    const left=[],right=[]; let i=0,j=0;
-    while(i<a.length || j<b.length) {
-      if(i<a.length && j<b.length && a[i]===b[j]) { const line=`<span class="diff-same">  ${safe(a[i]) || " "}</span>`; left.push(line);right.push(line);i++;j++; }
-      else if(i<a.length && (j===b.length || grid[i+1][j]>=grid[i][j+1])) left.push(`<span class="diff-remove">− ${safe(a[i++])}</span>`);
-      else right.push(`<span class="diff-add">+ ${safe(b[j++])}</span>`);
+    if (a.length * b.length > 500000) return [...a.map((t, i) => ({ type: "remove", a: t, ai: i + 1 })), ...b.map((t, j) => ({ type: "add", b: t, bi: j + 1 }))];
+    const grid = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+    for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) grid[i][j] = a[i] === b[j] ? grid[i + 1][j + 1] + 1 : Math.max(grid[i + 1][j], grid[i][j + 1]);
+    const ops = []; let i = 0, j = 0;
+    while (i < a.length || j < b.length) {
+      if (i < a.length && j < b.length && a[i] === b[j]) { ops.push({ type: "same", a: a[i], b: b[j], ai: i + 1, bi: j + 1 }); i++; j++; }
+      else if (i < a.length && (j === b.length || grid[i + 1][j] >= grid[i][j + 1])) { ops.push({ type: "remove", a: a[i], ai: i + 1 }); i++; }
+      else { ops.push({ type: "add", b: b[j], bi: j + 1 }); j++; }
     }
-    return [left.join(""),right.join("")];
+    return ops;
+  }
+  function splitRows(ops) {
+    const rows = []; let removed = [], added = [];
+    const flush = () => { for (let k = 0; k < Math.max(removed.length, added.length); k++) rows.push({ type: "change", left: removed[k] || null, right: added[k] || null }); removed = []; added = []; };
+    for (const op of ops) { if (op.type === "same") { flush(); rows.push({ type: "same", left: op, right: op }); } else if (op.type === "remove") removed.push(op); else added.push(op); }
+    flush();
+    return rows;
+  }
+  function foldRows(rows) {
+    if (!diffView.changesOnly) return rows;
+    const context = 2, out = []; let k = 0, foldId = 0;
+    while (k < rows.length) {
+      if (rows[k].type !== "same") { out.push(rows[k++]); continue; }
+      let end = k; while (end < rows.length && rows[end].type === "same") end++;
+      const run = rows.slice(k, end), head = k === 0 ? 0 : context, tail = end === rows.length ? 0 : context;
+      const id = `f${foldId++}`;
+      if (run.length > head + tail + 1 && !diffView.openFolds.has(id)) out.push(...run.slice(0, head), { type: "fold", id, count: run.length - head - tail }, ...run.slice(run.length - tail));
+      else out.push(...run);
+      k = end;
+    }
+    return out;
+  }
+  const roleLabels = { "[SYSTEM]": "System", "[USER]": "User", "[ASSISTANT]": "Assistant" };
+  function diffCell(op, side) {
+    if (!op) return '<div class="d-cell blank"></div>';
+    const text = side === "left" ? op.a : op.b, line = side === "left" ? op.ai : op.bi;
+    const mark = op.type === "add" ? "+" : op.type === "remove" ? "−" : "";
+    if (roleLabels[text]) return `<div class="d-cell role ${op.type}"><span class="ln">${line}</span><span class="mk">${mark}</span><span class="tx">${roleLabels[text]}</span></div>`;
+    return `<div class="d-cell ${op.type}"><span class="ln">${line}</span><span class="mk">${mark}</span><span class="tx">${safe(text) || " "}</span></div>`;
+  }
+  const foldButton = row => `<button type="button" class="d-fold" data-fold="${row.id}">${number(row.count)} dòng giống nhau, bấm để hiện</button>`;
+  function renderDiffBody(before, after, leftLabel, rightLabel) {
+    if (before === null) {
+      const lines = after.split("\n");
+      return `<div class="diff unified single">${lines.map((text, index) => diffCell({ type: "plain", b: text, bi: index + 1 }, "right")).join("")}</div>`;
+    }
+    const ops = diffOps(before, after);
+    if (diffView.mode === "unified") {
+      const rows = foldRows(ops.map(op => ({ type: op.type === "same" ? "same" : "change", op })));
+      return `<div class="diff unified">${rows.map(row => row.type === "fold" ? foldButton(row) : diffCell(row.op, row.op.type === "remove" ? "left" : "right")).join("")}</div>`;
+    }
+    const rows = foldRows(splitRows(ops));
+    return `<div class="diff split"><div class="d-head"><span>${safe(leftLabel)}</span><span>${safe(rightLabel)}</span></div>${rows.map(row => row.type === "fold" ? foldButton(row) : `<div class="d-row ${row.type}">${diffCell(row.left, "left")}${diffCell(row.right, "right")}</div>`).join("")}</div>`;
+  }
+  function syncPromptControls() {
+    $("#prompt-preset-steps").innerHTML = [...$("#prompt-preset").options].map((option, index) => `${index ? '<span class="step-sep" aria-hidden="true">›</span>' : ""}<button type="button" data-index="${safe(option.value)}" aria-pressed="${option.value === $("#prompt-preset").value}">${safe(option.textContent)}</button>`).join("");
+    $("#prompt-stage-tabs").innerHTML = [...$("#prompt-stage").options].map(option => `<button type="button" data-stage="${safe(option.value)}" aria-pressed="${option.value === $("#prompt-stage").value}">${safe(option.textContent)}</button>`).join("") || '<span class="tiny-note">Không có lượt gọi model.</span>';
+    $$("[data-diff-mode]").forEach(button => { const active = button.dataset.diffMode === diffView.mode; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); });
   }
   function renderPromptRationale(row, previous, stage) {
     const host = $("#prompt-rationale");
@@ -491,25 +586,38 @@
     const key=$("#prompt-stage").value;
     const stage=stagesOf(row).find(t=>t.key===key);
     let old=stagesOf(previous || {}).find(t=>t.key===key);
-    let referenceLabel=previous?.preset_id?.toUpperCase() || "Chưa có cấu hình trước";
+    let referenceLabel=previous?.preset_id?.toUpperCase() || "";
     if (stage?.stage === "repair") {
       const calls=stagesOf(row);old=calls[calls.findIndex(t=>t.key===key)-1];
-      referenceLabel=`${row.preset_id?.toUpperCase() || "Tùy chỉnh"} · Trước lượt sửa`;
+      referenceLabel=`${row.preset_id?.toUpperCase() || "Tùy chỉnh"}, trước lượt sửa`;
     }
-    const before=old ? messageText(old) : "", after=messageText(stage);
-    const [left,right]=lineDiff(before,after);
+    const currentLabel=row.preset_id?.toUpperCase() || "Tùy chỉnh";
+    const viewKey=`${$("#prompt-model").value}|${row.preset_id}|${key}`;
+    if (diffView.key !== viewKey) { diffView.key = viewKey; diffView.openFolds.clear(); }
+    const after=messageText(stage);
+    const before=old ? messageText(old) : null;
     renderPromptRationale(row,previous,stage);
-    $("#prompt-diff").innerHTML = `<p class="tiny-note">Schema ban đầu: ${safe((row.selected_tables || []).join(" · "))} · ${(row.example_ids || []).length} ví dụ train${row.options?.c4 && !stagesOf(row).some(t=>t.stage==="repair") && !promptPreview ? " · C4: không phát sinh lượt sửa" : ""}</p><div class="prompt-pair"><section class="prompt-pane"><h3>${safe(referenceLabel)} · ${old ? stage?.stage === "repair" ? "Prompt trước" : "Cùng lượt gọi" : "Chưa có lượt gọi tương ứng"}</h3><pre>${left || "—"}</pre></section><section class="prompt-pane"><h3>${safe(row.preset_id?.toUpperCase() || "Tùy chỉnh")} · ${before===after && stage ? "Prompt không đổi" : "Prompt hiện tại"}</h3><pre>${right || "Chưa có lượt gọi model."}</pre></section></div>`;
+    syncPromptControls();
+    const ops = before === null ? [] : diffOps(before, after);
+    const added = ops.filter(op => op.type === "add").length, removed = ops.filter(op => op.type === "remove").length;
+    const tokenNow = stage?.usage?.input_tokens, tokenBefore = old?.usage?.input_tokens;
+    const tokenText = numeric(tokenNow) ? `<span class="pd-tokens">Input ${numeric(tokenBefore) ? `${number(tokenBefore)} → ` : ""}<b>${number(tokenNow)}</b> token${numeric(tokenBefore) ? ` (${tokenNow - tokenBefore >= 0 ? "+" : "−"}${number(Math.abs(tokenNow - tokenBefore))})` : ""}</span>` : "";
+    const context = `Schema ban đầu: ${safe((row.selected_tables || []).join(", ")) || "chưa có"}. ${(row.example_ids || []).length} ví dụ train.${row.options?.c4 && !stagesOf(row).some(t=>t.stage==="repair") && !promptPreview ? " C4 không phát sinh lượt sửa." : ""}`;
+    $("#prompt-summary").innerHTML = !stage ? '<p class="tiny-note">Cấu hình này chưa có lượt gọi model.</p>' : before === null
+      ? `<p class="pd-line"><b>${safe(currentLabel)}</b> là mốc đầu tiên, chưa có cấu hình trước để so sánh. Dưới đây là toàn bộ prompt.${tokenText ? ` ${tokenText}` : ""}</p><p class="tiny-note">${context}</p>`
+      : `<p class="pd-line"><b>${safe(currentLabel)}</b> so với <b>${safe(referenceLabel)}</b>${before === after ? '<span class="pd-same">Prompt không đổi</span>' : `<span class="pd-add">+${number(added)} dòng</span><span class="pd-rem">−${number(removed)} dòng</span>`}${tokenText}</p><p class="tiny-note">${context}</p>`;
+    $(".prompt-toolbar").hidden = before === null || !stage;
+    $("#prompt-diff").innerHTML = stage ? renderDiffBody(before, after, referenceLabel, currentLabel) : "";
     $("#prompt-response").textContent=pretty({output:stage?.output,error:stage?.error,usage:stage?.usage,duration_ms:stage?.duration_ms,prompt_hash:stage?.prompt_hash,stages:row.stages});
   }
   async function previewPrompts() {
     if (!currentSample() || state.source !== "dataset" || state.previewBusy) return;
     const sampleId=currentSample().id; state.previewBusy=true;
     $("#prompt-preview-button").disabled=true;
-    try { const data=await api("prompt-preview",{sample_id:sampleId});if(currentSample()?.id!==sampleId || state.source!=="dataset") return;$("#comparison-context").hidden=false;$("#comparison-context").textContent=`XEM TRƯỚC · ${data.sample.id} · ${data.sample.db_id} · ${data.sample.question}`;setPromptData(data.results,true,data.sample);
+    try { const data=await api("prompt-preview",{sample_id:sampleId});if(currentSample()?.id!==sampleId || state.source!=="dataset") return;$("#comparison-context").hidden=false;$("#comparison-context").innerHTML=`Xem trước prompt cho mẫu ${safe(data.sample.id)} (${safe(data.sample.db_id)})<br><span class="caption-detail">${safe(data.sample.question)}</span>`;setPromptData(data.results,true,data.sample);
       state.comparison=null;$("#compare-export").disabled=true;$("#gold-details").hidden=true;
       $("#compare-results").className="empty-state";
-      $("#compare-results").innerHTML="<p>Đây là bản xem trước prompt. Chạy so sánh để nhận SQL và chỉ số thực.</p>";
+      $("#compare-results").innerHTML="<p>Đây là bản xem trước prompt. Bấm Chạy để nhận SQL và chỉ số thực.</p>";
     }
     catch(error) { notice($("#compare-status"),error.message,true); }
     finally {state.previewBusy=false;updateButtons();}
@@ -563,7 +671,7 @@
     try { state.info = await api("info"); renderInfo(); await loadSamples(); }
     catch (error) {
       $("#global-status").hidden = false;
-      $("#global-status").innerHTML = `Không thể kết nối hệ thống thí nghiệm: ${safe(error.message)} <button id="retry-info" class="button subtle small">Thử lại ↻</button>`;
+      $("#global-status").innerHTML = `Không thể kết nối hệ thống thí nghiệm: ${safe(error.message)} <button id="retry-info" class="link-button">Thử lại</button>`;
       $("#dataset-health").textContent = "Không thể kiểm tra dữ liệu";
       $("#model-health").textContent = "Không thể kiểm tra mô hình";
       $("#model-cards").innerHTML = '<p class="muted">Kiểm tra server local rồi thử lại.</p>';
@@ -586,13 +694,15 @@
     updateButtons();
   }));
   $("#preset").addEventListener("change", applyPreset);
-  ["c1", "c2", "c3", "c4"].forEach(key => $(`#${key}`).addEventListener("change", () => { $("#preset-label").textContent = Object.values(options()).some(Boolean) ? "TÙY CHỈNH" : "C0"; }));
+  ["c1", "c2", "c3", "c4"].forEach(key => $(`#${key}`).addEventListener("change", () => { $("#preset-label").textContent = Object.values(options()).some(Boolean) ? "Tùy chỉnh" : "C0"; }));
   $("#sample-split").addEventListener("change", loadSamples);
   $("#sample-search").addEventListener("input", () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(loadSamples, 300); });
   $("#sample-select").addEventListener("change", renderSample);
   $("#custom-question").addEventListener("input", updateButtons);
   $("#custom-db").addEventListener("input", () => { $("#schema-details").hidden = true; updateButtons(); });
   $("#schema-button").addEventListener("click", loadSchema);
+  ["mouseover", "focusin"].forEach(type => $("#schema-content").addEventListener(type, event => { const item = event.target.closest("li.fk"); if (item) highlightReference(item, true); }));
+  ["mouseout", "focusout"].forEach(type => $("#schema-content").addEventListener(type, event => { const item = event.target.closest("li.fk"); if (item) highlightReference(item, false); }));
   $("#compare-button").addEventListener("click", compare);
   $("#compare-export").addEventListener("click", () => downloadJson(state.comparison, `visql-compare-${state.comparison?.id || Date.now()}.json`));
   $("#benchmark-split").addEventListener("change", updateButtons);
@@ -616,6 +726,11 @@
   $("#prompt-model").addEventListener("change",fillPromptPresets);
   $("#prompt-preset").addEventListener("change",fillPromptStages);
   $("#prompt-stage").addEventListener("change",renderPromptDiff);
+  $("#prompt-preset-steps").addEventListener("click", event => { const button = event.target.closest("button[data-index]"); if (!button) return; $("#prompt-preset").value = button.dataset.index; fillPromptStages(); });
+  $("#prompt-stage-tabs").addEventListener("click", event => { const button = event.target.closest("button[data-stage]"); if (!button) return; $("#prompt-stage").value = button.dataset.stage; renderPromptDiff(); });
+  $$("[data-diff-mode]").forEach(button => button.addEventListener("click", () => { diffView.mode = button.dataset.diffMode; renderPromptDiff(); }));
+  $("#diff-changes-only").addEventListener("change", event => { diffView.changesOnly = event.target.checked; diffView.openFolds.clear(); renderPromptDiff(); });
+  $("#prompt-diff").addEventListener("click", event => { const button = event.target.closest(".d-fold"); if (!button) return; diffView.openFolds.add(button.dataset.fold); renderPromptDiff(); });
   $("#report-details-button").addEventListener("click",reportRecords);
   $("#sequence-cancel").addEventListener("click",async()=>{try {if(sequenceId){await api("cancel",{id:sequenceId});notice($("#compare-status"),"Đã yêu cầu dừng sau lượt model hiện tại.");}} catch(error) {notice($("#compare-status"),error.message,true);}});
   if (/^#report(?:\/[a-f0-9]{32})?$/.test(location.hash)) {
