@@ -41,6 +41,12 @@ class ServerTests(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code,json.load(e)
 
+    def test_run_log_script_is_served(self):
+        with urllib.request.urlopen(self.base+'/run-log.js',timeout=10) as r:
+            self.assertEqual(r.status,200)
+            self.assertTrue(r.headers['Content-Type'].startswith('text/javascript'))
+            self.assertIn('RunLog',r.read().decode('utf-8'))
+
     def test_info_exposes_synthetic_schema_and_counts(self):
         status,data = self.request('/api/info')
         self.assertEqual(status,200)

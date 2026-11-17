@@ -84,7 +84,7 @@ def make_server(db_path, port=8765, model=None, ollama_url=None, experiment_conf
                 except (OSError,ValueError,KeyError):
                     pass
                 return self.send({'schema':schema,'counts':counts,'examples':[e['question'] for e in EXAMPLES], 'ollama':ollama,'dataset':'Dữ liệu bán hàng giả lập, seed 42; đơn vị VND.'})
-            files = {'/':('experiment.html','text/html; charset=utf-8'), '/legacy':('index.html','text/html; charset=utf-8'),'/legacy/':('index.html','text/html; charset=utf-8'),'/experiment.js':('experiment.js','text/javascript; charset=utf-8'),'/experiment.css':('experiment.css','text/css; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'), '/style.css':('style.css','text/css; charset=utf-8')}
+            files = {'/':('experiment.html','text/html; charset=utf-8'), '/legacy':('index.html','text/html; charset=utf-8'),'/legacy/':('index.html','text/html; charset=utf-8'),'/experiment.js':('experiment.js','text/javascript; charset=utf-8'),'/experiment.css':('experiment.css','text/css; charset=utf-8'),'/run-log.js':('run-log.js','text/javascript; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'), '/style.css':('style.css','text/css; charset=utf-8')}
             if route in files:
                 filename,mime = files[route]
                 return self.send((STATIC/filename).read_bytes(),content_type=mime)

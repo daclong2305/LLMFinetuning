@@ -389,7 +389,8 @@
   async function loadRuns() {
     try {
       const data = await api("runs");
-      $("#run-history").innerHTML = data.runs?.length ? data.runs.map(run => `<div class="history-row"><div><strong>${safe(run.id)}</strong><small>${run.scope === "full" ? "FULL" : "PILOT"} · ${run.purpose === "prompt_comparison" ? "Prompt" : "Benchmark"} · ${safe(run.split || "dev")} · ${safe(run.created_at ? new Date(run.created_at).toLocaleString("vi-VN") : "Không có thời gian")} · ${run.done || 0}/${run.total || 0} kết quả</small></div><div class="history-actions">${statusBadge(run.state)}<button class="button subtle small load-run" data-run="${safe(run.id)}">Xem</button></div></div>`).join("") : '<p class="muted">Chưa có lượt chạy nào được lưu.</p>';
+      $("#run-history").innerHTML = data.runs?.length ? data.runs.map(run => `<div class="history-row"><div><strong>${safe(run.id)}</strong><small>${run.scope === "full" ? "FULL" : "PILOT"} · ${run.purpose === "prompt_comparison" ? "Prompt" : "Benchmark"} · ${safe(run.split || "dev")} · ${safe(run.created_at ? new Date(run.created_at).toLocaleString("vi-VN") : "Không có thời gian")} · ${run.done || 0}/${run.total || 0} kết quả</small></div><div class="history-actions">${statusBadge(run.state)}<button class="button subtle small load-run" data-run="${safe(run.id)}">Xem</button>${run.done ? `<button class="button subtle small open-log" data-run="${safe(run.id)}">Duyệt log</button>` : ""}</div></div>`).join("") : '<p class="muted">Chưa có lượt chạy nào được lưu.</p>';
+      $$(".open-log").forEach(button => button.addEventListener("click", () => openLogView(button.dataset.run)));
       $$(".load-run").forEach(button => button.addEventListener("click", () => { clearTimeout(state.poll); state.job = { id: button.dataset.run }; pollJob(button.dataset.run); }));
     } catch (error) { $("#run-history").innerHTML = `<p class="muted">Không thể tải lịch sử: ${safe(error.message)}</p>`; }
   }
@@ -411,7 +412,14 @@
   function showView(name) {
     $$(".nav-tab").forEach(tab => { const active = tab.dataset.view === name; tab.classList.toggle("active", active); tab.setAttribute("aria-pressed", String(active)); });
     $$(".view").forEach(view => { view.hidden = view.id !== `view-${name}`; });
-    history.replaceState(null, "", name === "benchmark" ? "#report" : name === "method" ? "#method" : "#experiment");
+    if (name === "log") {
+      if (logState.data) {
+        mountDetail(); renderLog();
+        if (["running", "pending", "queued", "cancel_requested"].includes(logState.data.run.state)) { clearTimeout(logState.timer); logState.timer = setTimeout(() => watchLog(logState.data.id), 1000); }
+      }
+    }
+    else { unmountDetail(); clearTimeout(logState.timer); }
+    history.replaceState(null, "", name === "benchmark" ? "#report" : name === "method" ? "#method" : name === "log" ? (logState.data ? `#log/${logState.data.id}` : "#log") : "#experiment");
   }
   function stagesOf(row) {
     if (row.kind === "preview") return [{stage:"generate", key:"generate:1", messages:row.messages, output:row.note}];
@@ -609,6 +617,7 @@
     $(".prompt-toolbar").hidden = before === null || !stage;
     $("#prompt-diff").innerHTML = stage ? renderDiffBody(before, after, referenceLabel, currentLabel) : "";
     $("#prompt-response").textContent=pretty({output:stage?.output,error:stage?.error,usage:stage?.usage,duration_ms:stage?.duration_ms,prompt_hash:stage?.prompt_hash,stages:row.stages});
+    renderLogMetricStrip();
   }
   async function previewPrompts() {
     if (!currentSample() || state.source !== "dataset" || state.previewBusy) return;
@@ -667,6 +676,427 @@
     } catch(error) {notice($("#benchmark-status"),error.message,true);}
     finally {$("#report-details-button").disabled=false;}
   }
+  // ---------- Duyệt log ----------
+  const logState = { runs: [], data: null, k: 1, chartPreset: null, timer: null, request: 0 };
+  const seriesColors = ["#2f6bff", "#c2410c", "#0f766e", "#7c3aed", "#a16207"];
+  const cellLabels = { pass: "EX đúng", fail: "EX sai", error: "Lỗi pipeline", na: "N/A", pending: "Chưa chạy" };
+  const detailHome = { marker: null, results: null, prompt: null, mounted: false, saved: undefined };
+  function logMetric() { return $("#log-metric").value; }
+  function presetLabel(id) { return logState.data?.run.presets?.find(p => p.id === id)?.label || presets().find(p => p.id === id)?.label || id; }
+  function mountDetail() {
+    if (detailHome.mounted) return;
+    if (!detailHome.marker) {
+      detailHome.prompt = $("#prompt-inspector");
+      detailHome.results = detailHome.prompt.previousElementSibling;
+      detailHome.marker = document.createComment("compare-detail-home");
+      detailHome.results.before(detailHome.marker);
+    }
+    detailHome.saved = state.comparison;
+    $("#log-prompt").append(detailHome.prompt);
+    $("#log-detail").append(detailHome.results);
+    detailHome.mounted = true;
+  }
+  function unmountDetail() {
+    if (!detailHome.mounted) return;
+    detailHome.marker.after(detailHome.results, detailHome.prompt);
+    detailHome.mounted = false;
+    $("#log-metric-strip")?.remove();
+    const saved = detailHome.saved;
+    detailHome.saved = undefined;
+    if (saved) { renderComparison(saved); return; }
+    state.comparison = null;
+    $("#comparison-context").hidden = true;
+    $("#compare-export").disabled = true;
+    $("#gold-details").hidden = true;
+    $("#prompt-inspector").hidden = true;
+    $("#compare-results").className = "empty-state";
+    $("#compare-results").innerHTML = "<p>Chọn câu hỏi rồi bấm Chạy.</p>";
+  }
+  async function loadLogRuns(selectId) {
+    try {
+      const data = await api("runs");
+      logState.runs = (data.runs || []).filter(run => (run.done || 0) > 0);
+      const wanted = selectId || logState.data?.id || "";
+      $("#log-run").innerHTML = '<option value="">Chọn lần chạy…</option>' + logState.runs.map(run => `<option value="${safe(run.id)}">${safe(run.id.slice(0, 8))} · ${run.purpose === "prompt_comparison" ? "Prompt" : "Benchmark"} · ${safe(run.split || "dev")} · ${number(run.done)}/${number(run.total)} kết quả · ${safe(run.created_at ? new Date(run.created_at).toLocaleString("vi-VN") : "")}</option>`).join("");
+      if (wanted && !logState.runs.some(run => run.id === wanted)) $("#log-run").insertAdjacentHTML("beforeend", `<option value="${safe(wanted)}">${safe(wanted.slice(0, 8))}</option>`);
+      $("#log-run").value = wanted;
+      if (!logState.runs.length) notice($("#log-status"), "Chưa có lần chạy nào có kết quả.");
+    } catch (error) { notice($("#log-status"), `Không thể tải danh sách lần chạy: ${error.message}`, true); }
+  }
+  async function openLog(id, { keepPosition = false } = {}) {
+    clearTimeout(logState.timer);
+    if (!id) { logState.data = null; $("#log-body").hidden = true; unmountDetail(); return; }
+    const request = ++logState.request;
+    if (!keepPosition) notice($("#log-status"), "Đang tải log…");
+    try {
+      const run = await api(`export?id=${encodeURIComponent(id)}&format=json`);
+      if (request !== logState.request) return;
+      const previous = logState.data?.id === id ? logState.data : null;
+      const groups = RunLog.groupRecords(run);
+      logState.data = { id, run, groups, done: run.done, steps: {} };
+      const total = groups.questions.length;
+      const followEnd = previous && logState.k === previous.groups.questions.length;
+      logState.k = previous ? Math.min(followEnd ? total : logState.k, total) || 1 : 1;
+      if (!logState.chartPreset || !groups.presets.includes(logState.chartPreset)) logState.chartPreset = groups.presets[0];
+      $("#log-run").value = id;
+      if (location.hash !== `#log/${id}` && !$("#view-log").hidden) history.replaceState(null, "", `#log/${id}`);
+      const difficulties = [...new Set(groups.questions.map(q => q.difficulty).filter(Boolean))];
+      const currentDifficulty = $("#log-difficulty").value;
+      $("#log-difficulty").innerHTML = '<option value="">Mọi độ khó</option>' + difficulties.map(d => `<option value="${safe(d)}">${safe(d)}</option>`).join("");
+      $("#log-difficulty").value = difficulties.includes(currentDifficulty) ? currentDifficulty : "";
+      const running = ["running", "pending", "queued", "cancel_requested"].includes(run.state);
+      notice($("#log-status"), `${statusLabels[run.state] || run.state} · ${number(run.done)}/${number(run.total)} kết quả · ${number(total)} câu · ${groups.models.length} mô hình × ${groups.presets.length} cấu hình${running ? " · đang tự cập nhật" : ""}`);
+      $("#log-body").hidden = !total;
+      if (!total) { notice($("#log-status"), "Lần chạy này chưa có kết quả."); return; }
+      mountDetail();
+      renderLog();
+      if (running) logState.timer = setTimeout(() => watchLog(id), 4000);
+    } catch (error) { if (request === logState.request) notice($("#log-status"), `Không thể tải log: ${error.message}`, true); }
+  }
+  async function watchLog(id) {
+    if (logState.data?.id !== id) return;
+    try {
+      const job = await api(`job?id=${encodeURIComponent(id)}`);
+      if (logState.data?.id !== id) return;
+      if (job.done !== logState.data.done) { await openLog(id, { keepPosition: true }); return; }
+      if (["running", "pending", "queued", "cancel_requested"].includes(job.state)) logState.timer = setTimeout(() => watchLog(id), 4000);
+      else openLog(id, { keepPosition: true });
+    } catch { logState.timer = setTimeout(() => watchLog(id), 8000); }
+  }
+  function logSteps(metric) {
+    const data = logState.data;
+    if (!data.steps[metric]) data.steps[metric] = RunLog.cumulative(data.groups, metric);
+    return data.steps[metric];
+  }
+  function setLogK(k, { scroll = false } = {}) {
+    const total = logState.data?.groups.questions.length || 0;
+    if (!total) return;
+    logState.k = Math.max(1, Math.min(total, k));
+    renderLog();
+    if (scroll) $("#log-body").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  function formatDelta(metric, now, before) {
+    if (!numeric(now) || !numeric(before)) return numeric(now) && before === null ? '<span class="delta">mới có</span>' : "";
+    const diff = now - before;
+    if (Math.abs(diff) < 1e-9) return '<span class="delta same">=</span>';
+    const text = metric === "ves" ? number(Math.abs(diff), 3) : `${number(Math.abs(diff) * 100, 1)} đ`;
+    return `<span class="delta ${diff > 0 ? "up" : "down"}">${diff > 0 ? "▲" : "▼"} ${text}</span>`;
+  }
+  function renderLog() {
+    const data = logState.data;
+    if (!data) return;
+    const { groups } = data;
+    const total = groups.questions.length;
+    const k = logState.k;
+    const question = groups.questions[k - 1];
+    const metric = logMetric();
+    const steps = logSteps(metric);
+    $("#log-k").max = String(total);
+    $("#log-k").value = String(k);
+    $("#log-prev").disabled = k <= 1;
+    $("#log-next").disabled = k >= total;
+    $("#log-position").innerHTML = `Câu <b>${number(k)}</b>/${number(total)}`;
+    $("#log-current").innerHTML = `<span class="log-current-meta">${safe(question.sample_id)} · ${safe(question.db_id)} · ${safe(question.difficulty)}</span>${safe(question.question)}`;
+    renderLogChart(metric, steps);
+    renderLogQuestions();
+    const results = question.records;
+    renderComparison({ id: data.id, sample: { id: question.sample_id, question: question.question, db_id: question.db_id }, results });
+    renderLogMetricStrip();
+    renderMetricDialog();
+  }
+  function renderLogMetricStrip() {
+    if (!detailHome.mounted || !logState.data) return;
+    const inspector = $("#prompt-inspector");
+    let strip = $("#log-metric-strip");
+    if (!strip) { strip = document.createElement("div"); strip.id = "log-metric-strip"; strip.className = "log-metric-strip"; }
+    const controls = $(".prompt-controls", inspector);
+    if (strip.previousElementSibling !== controls) controls.after(strip);
+    const { groups } = logState.data;
+    const k = logState.k, total = groups.questions.length;
+    const question = groups.questions[k - 1];
+    const model = $("#prompt-model").value;
+    const preset = promptRow()?.preset_id;
+    if (!groups.models.includes(model) || !groups.presets.includes(preset)) { strip.innerHTML = ""; return; }
+    const record = question.records.find(r => r.model_id === model && r.preset_id === preset);
+    const cards = scoreKeys.map(metric => {
+      const steps = logSteps(metric);
+      const cell = steps[k - 1][model][preset];
+      const before = k > 1 ? steps[k - 2][model][preset].value : null;
+      const own = record ? record.metrics?.[metric] : undefined;
+      const ownText = record === undefined ? "chưa chạy" : own == null ? (record.status === "error" ? "lỗi" : "N/A") : score(metric, metricNumber(own));
+      const ownClass = record === undefined ? "pending" : own == null ? (record.status === "error" ? "error" : "na") : metric === "ves" ? "" : Number(metricNumber(own)) >= 1 ? "pass" : "fail";
+      const explained = true;
+      const tag = explained ? "button" : "div";
+      return `<${tag} class="metric-card${explained ? " explainable" : ""}"${explained ? ` type="button" data-explain="${metric}" title="Xem cách tính ${metric.toUpperCase()}"` : ""}><span class="metric-name">${metric.toUpperCase()}${explained ? ' <span class="explain-hint">Cách tính ⓘ</span>' : ""}</span><span class="metric-value${cell.value == null ? " na" : ""}">${cell.value == null ? "N/A" : score(metric, cell.value)}</span>${formatDelta(metric, cell.value, before)}<small>${number(cell.eligible)}/${number(cell.n)} đo được</small><small>câu này: <span class="own ${ownClass}">${safe(ownText)}</span></small></${tag}>`;
+    }).join("");
+    strip.innerHTML = `<p class="metric-strip-caption">Chỉ số cộng dồn sau <b>${number(k)}/${number(total)}</b> câu${k === total ? " (kết quả cuối)" : ""} · ${safe(modelLabel(model))} · ${safe(preset.toUpperCase())}</p><div class="metric-cards">${cards}</div>`;
+  }
+  const metricNames = { em: "EM", cm: "CM", ex: "EX", ts: "TS", ves: "VES" };
+  const metricDefinitions = {
+    em: "EM (Exact Set Match, theo bộ đánh giá Spider) so sánh <b>cấu trúc</b> SQL sinh ra với SQL tham chiếu. Cả hai được tách thành các thành phần SELECT, WHERE, GROUP BY, ORDER BY, AND/OR, INTERSECT/UNION/EXCEPT và từ khóa; giá trị hằng (chuỗi, số) bị bỏ qua, các mục được so dạng tập (không phụ thuộc thứ tự), cột nối qua khóa ngoại được coi là tương đương. EM = 1 chỉ khi <b>mọi</b> thành phần khớp hoàn toàn và tập bảng trong FROM giống nhau; ngược lại EM = 0.",
+    cm: "CM (Component Matching) dùng <b>cùng cách tách với EM</b> nhưng cho điểm từng phần. Mỗi thành phần xuất hiện trong ít nhất một trong hai SQL được gọi là “đang hoạt động” và được chấm F1; với bộ Spider này F1 của một thành phần là 1 nếu khớp hoàn toàn, 0 nếu không. CM của một câu = trung bình F1 của các thành phần đang hoạt động (không có thành phần nào hoạt động thì CM = 1). SQL không biên dịch được → CM = 0.",
+    ex: "EX (Execution Accuracy) <b>chạy</b> SQL sinh ra và SQL tham chiếu trên cùng database có dữ liệu (chế độ chỉ đọc, lấy toàn bộ kết quả), rồi so kết quả: phải cùng số cột, cùng số dòng và cùng giá trị. Nếu SQL tham chiếu có ORDER BY ở cấp ngoài cùng thì thứ tự dòng phải giống; nếu không, các dòng được so như một đa tập. Cho phép đổi thứ tự cột. SQL sinh ra lỗi hoặc vượt giới hạn → EX = 0. Database không qua kiểm tra (SQL tham chiếu chạy lỗi, thiếu dữ liệu…) → N/A.",
+    ts: "TS (Test-suite Accuracy) giống EX nhưng chạy trên <b>nhiều phiên bản database</b> cùng schema, khác dữ liệu (bộ test-suite). TS = 1 chỉ khi kết quả khớp ở <b>mọi</b> phiên bản — để loại trường hợp SQL sai ý nhưng tình cờ ra đúng kết quả trên một database. Database chưa có ít nhất hai phiên bản dữ liệu khác nhau → N/A.",
+    ves: "VES (Valid Efficiency Score) đo <b>tốc độ</b> của SQL đúng. Chỉ tính khi EX đo được: EX = 0 thì VES = 0. Khi EX = 1, SQL tham chiếu và SQL sinh ra được chạy xen kẽ 100 lần trên database; mỗi cặp lấy √(thời gian SQL tham chiếu / thời gian SQL sinh ra), VES của câu là trung bình các tỉ lệ này. VES > 1 nghĩa là SQL sinh ra chạy nhanh hơn SQL tham chiếu.",
+  };
+  const emComponentNames = {
+    "select": "SELECT (cột + hàm gộp)", "select(no AGG)": "SELECT (bỏ qua hàm gộp)",
+    "where": "WHERE (điều kiện + toán tử)", "where(no OP)": "WHERE (bỏ qua toán tử)",
+    "group(no Having)": "GROUP BY", "group": "GROUP BY + HAVING", "order": "ORDER BY (+ có/không LIMIT)",
+    "and/or": "AND / OR", "IUEN": "INTERSECT / UNION / EXCEPT", "keywords": "Từ khóa SQL dùng",
+  };
+  const passMark = '<span class="own pass">✓</span>', failMark = '<span class="own fail">✗</span>';
+  function reasonText(reason) {
+    reason = String(reason || "");
+    if (/^Valid SQL unsupported by Spider adapter/.test(reason)) return "SQL sinh ra hợp lệ nhưng bộ phân tích Spider không đọc được cấu trúc này";
+    if (/^Gold SQL unsupported by Spider adapter/.test(reason)) return "SQL tham chiếu không phân tích được bằng bộ Spider";
+    if (/^No gold SQL/.test(reason)) return "Không có SQL tham chiếu";
+    if (/^Gold SQL execution audit failed/.test(reason)) return "Database không qua kiểm tra: có SQL tham chiếu của database này chạy lỗi";
+    if (/^Gold full execution unavailable/.test(reason)) return "SQL tham chiếu không chạy trọn vẹn được";
+    if (/^Compatible data-filled SQLite database unavailable/.test(reason)) return "Không có database có dữ liệu cho câu này";
+    if (/At least two distinct test-suite states/.test(reason)) return "Database này chưa có ít nhất hai phiên bản dữ liệu test-suite";
+    if (/^Test-suite schema\/data\/gold audit failed/.test(reason)) return "Một phiên bản test-suite không qua kiểm tra";
+    if (/^VES requires/.test(reason)) return "VES cần EX đo được và SQL tham chiếu hợp lệ";
+    if (/^VES repeated|^VES repetition|^VES timings/.test(reason)) return "Không hoàn tất đủ các lượt đo thời gian";
+    return reason || "Không có lý do được lưu";
+  }
+  const continuous = metric => metric === "cm" || metric === "ves";
+  function breakdownFormula(metric, b) {
+    const name = metricNames[metric];
+    if (!b.eligible) return `${name} = N/A (chưa có câu nào đo được)`;
+    return continuous(metric)
+      ? `${name} = tổng điểm các câu / số câu đo được = <b>${number(b.sum, 3)} / ${number(b.eligible)}</b> = <b>${score(metric, b.value)}</b>`
+      : `${name} = số câu đạt (= 1) / số câu đo được = <b>${number(b.ones)} / ${number(b.eligible)}</b> = <b>${score(metric, b.value)}</b>`;
+  }
+  function breakdownDetails(metric, b) {
+    const name = metricNames[metric];
+    const grouped = {};
+    for (const [reason, count] of Object.entries(b.naReasons)) grouped[reasonText(reason)] = (grouped[reasonText(reason)] || 0) + count;
+    const reasons = Object.entries(grouped).sort((a, c) => c[1] - a[1]).map(([reason, count]) => `<li>${number(count)} câu: ${safe(reason)}</li>`).join("");
+    const partial = b.eligible - b.ones - b.zeros;
+    const split = metric === "ves"
+      ? `<span class="own fail">${number(b.zeros)} câu VES = 0 (EX = 0)</span> · <span class="own pass">${number(b.eligible - b.zeros)} câu có VES &gt; 0</span>`
+      : `<span class="own pass">${number(b.ones)} câu ${name} = 1</span> · <span class="own fail">${number(b.zeros)} câu ${name} = 0</span>${partial > 0 ? ` · ${number(partial)} câu điểm lẻ` : ""}`;
+    return `<ul class="em-counts"><li>${number(b.n)} câu đã chạy với cấu hình này</li><li>${split} → ${number(b.eligible)} câu đo được (mẫu số)</li>${b.na ? `<li>${number(b.na)} câu N/A, không tính vào mẫu số:<ul>${reasons}</ul></li>` : ""}</ul>`;
+  }
+  function chipClass(metric, value) {
+    if (value === undefined) return "pending";
+    if (value === null) return "na";
+    if (metric === "ves") return value > 0 ? "pass" : "fail";
+    return value >= 1 ? "pass" : value <= 0 ? "fail" : "partial";
+  }
+  function storedVerdict(metric, record) {
+    const name = metricNames[metric];
+    if (!record) return "Cấu hình này chưa chạy câu này.";
+    const m = record.metrics || {};
+    const raw = m[metric];
+    if (raw == null) return `${name} = N/A: ${safe(reasonText(m.unavailable_reasons?.[metric] || (record.status === "error" ? "Lỗi pipeline" : "")))}. Câu này không được tính vào mẫu số.`;
+    const value = Number(metricNumber(raw));
+    if (metric === "em" || metric === "cm") {
+      const ex = RunLog.explainEm(record);
+      if (ex.status === "invalid") return `SQL sinh ra không biên dịch được với schema (hoặc pipeline lỗi), nên được tính là dự đoán sai: <b>${name} = 0</b>.`;
+      if (metric === "cm") {
+        const active = ex.components.filter(c => c.active), matched = active.filter(c => c.match);
+        return active.length ? `${number(matched.length)}/${number(active.length)} thành phần đang hoạt động khớp → <b>CM = ${number(matched.length)} / ${number(active.length)} = ${score("cm", value)}</b>.` : "Không có thành phần nào hoạt động → <b>CM = 1</b>.";
+      }
+      if (ex.status === "match") return "Mọi thành phần đều khớp và tập bảng trong FROM giống nhau → <b>EM = 1</b>.";
+      return ex.tableMismatch ? "Các thành phần đều khớp nhưng tập bảng trong FROM khác SQL tham chiếu → <b>EM = 0</b>." : `Thành phần không khớp: <b>${ex.failed.map(key => safe(emComponentNames[key] || key)).join(", ")}</b> → <b>EM = 0</b>.`;
+    }
+    if (metric === "ex") return value >= 1 ? "Kết quả hai SQL giống nhau → <b>EX = 1</b>." : m.execution_success === false ? "SQL sinh ra không chạy trọn vẹn được → <b>EX = 0</b>." : "Kết quả hai SQL khác nhau → <b>EX = 0</b>.";
+    if (metric === "ts") {
+      const states = m.ts_details?.evaluated_states;
+      return value >= 1 ? `Kết quả khớp ở cả ${number(states)} phiên bản database → <b>TS = 1</b>.` : `Kết quả không khớp ở ít nhất một trong ${number(states)} phiên bản database → <b>TS = 0</b>.`;
+    }
+    const d = m.ves_details || {};
+    if (Number(metricNumber(m.ex)) < 1) return "EX = 0 nên <b>VES = 0</b> (không đo thời gian cho SQL sai).";
+    return `VES = trung bình √(t<sub>tham chiếu</sub> / t<sub>sinh ra</sub>) trên ${number(d.completed_pairs)} cặp chạy = <b>${score("ves", value)}</b>. Thời gian trung bình: SQL tham chiếu ${duration(d.gold_mean_sql_ms)}, SQL sinh ra ${duration(d.prediction_mean_sql_ms)}. Lưu ý: không lấy √(trung bình gold / trung bình sinh ra) vì vài lượt chạy chậm bất thường sẽ kéo lệch trung bình; VES lấy trung bình của tỉ lệ từng cặp.`;
+  }
+  function renderMetricDialog() {
+    const dialog = $("#metric-dialog");
+    const info = logState.dialog;
+    if (!dialog.open || !info || !logState.data) return;
+    const { metric } = info;
+    const name = metricNames[metric];
+    const { groups } = logState.data;
+    const k = logState.k, total = groups.questions.length;
+    const question = groups.questions[k - 1];
+    const record = question.records.find(r => r.model_id === info.model && r.preset_id === info.preset);
+    const now = RunLog.metricBreakdown(groups, metric, info.model, info.preset, k);
+    const final = RunLog.metricBreakdown(groups, metric, info.model, info.preset, total);
+    $("#metric-dialog-title").innerHTML = `Cách tính ${name} <span class="caption-detail">${safe(modelLabel(info.model))} · ${safe(info.preset.toUpperCase())}</span>`;
+    $("#metric-tabs").innerHTML = Object.keys(metricNames).map(key => `<button type="button" data-metric="${key}" aria-pressed="${key === metric}">${metricNames[key]}</button>`).join("");
+    const own = record ? record.metrics?.[metric] : undefined;
+    const chips = groups.questions.map((q, index) => {
+      const item = final.perQuestion[index];
+      const label = item.value === undefined ? "chưa chạy" : item.value === null ? "N/A" : score(metric, item.value);
+      return `<button type="button" class="em-chip ${chipClass(metric, item.value)}${index + 1 > k ? " later" : ""}${index + 1 === k ? " current" : ""}" data-k="${index + 1}" title="Câu ${index + 1} · ${safe(q.sample_id)} · ${name} ${label}">${index + 1}</button>`;
+    }).join("");
+    $("#metric-dialog-body").innerHTML = `
+      <section><h3>${name} là gì?</h3><p>${metricDefinitions[metric]}</p></section>
+      <section><h3>Ở câu này <span class="caption-detail">câu ${number(k)}/${number(total)} · ${safe(question.sample_id)} · ${name} = ${record === undefined ? "chưa chạy" : own == null ? "N/A" : score(metric, metricNumber(own))}</span></h3><p class="em-question">${safe(question.question)}</p><div id="metric-detail" data-key="${safe(record ? `${metric}|${question.sample_id}|${record.model_id}|${record.preset_id}` : "")}">${record?.sql ? '<p class="tiny-note">Đang phân tích chi tiết…</p>' : record ? '<p class="tiny-note">Không có SQL sinh ra để phân tích.</p>' : ""}</div><p class="em-verdict">${storedVerdict(metric, record)}</p></section>
+      <section><h3>Cộng dồn từ câu 1 đến câu ${number(k)}</h3><p>${breakdownFormula(metric, now)}</p>${breakdownDetails(metric, now)}</section>
+      <section><h3>Toàn bộ benchmark (${number(total)} câu)</h3><p>${breakdownFormula(metric, final)}</p>${breakdownDetails(metric, final)}<p class="tiny-note">Đây là con số trong bảng Báo cáo. Ô màu: xanh = ${metric === "ves" ? "VES &gt; 0" : "1"}, đỏ = 0${metric === "cm" ? ", vàng = điểm lẻ" : ""}, xám = N/A; các câu sau câu đang xem được làm mờ. Bấm một ô để chuyển tới câu đó.</p><div class="em-chips">${chips}</div></section>`;
+    loadMetricDetail();
+  }
+  const explainCache = new Map();
+  function sqlPair(title, gold, pred) {
+    return `<div class="em-step"><p class="em-step-title">${title}</p><div class="em-pair"><div><p class="detail-label">SQL tham chiếu (câu gốc)</p><div class="sql-block"><pre>${safe(gold || "—")}</pre></div></div><div><p class="detail-label">SQL sinh ra</p><div class="sql-block"><pre>${safe(pred || "—")}</pre></div></div></div></div>`;
+  }
+  function itemList(items) {
+    if (items == null) return '<span class="na">không tách được</span>';
+    return items.length ? items.map(item => `<code>${safe(item)}</code>`).join(" ") : '<span class="na">—</span>';
+  }
+  function renderStructure(data, metric) {
+    const { gold, pred } = data;
+    const tokens = { ...gold.tokens, ...pred.tokens };
+    const legend = Object.entries(tokens).sort((a, b) => Number(a[0].slice(1)) - Number(b[0].slice(1))).map(([token, name]) => `<span><code>${safe(token)}</code> = ${safe(name)}</span>`).join("");
+    const errors = ["gold", "pred"].filter(side => data[side].error).map(side => `<p class="result-error">${side === "gold" ? "SQL tham chiếu" : "SQL sinh ra"} không tách được: ${safe(data[side].error)}</p>`).join("");
+    const rows = data.comparison.length ? data.comparison : Object.keys(gold.components || pred.components || {}).map(key => ({ key, match: null }));
+    const cm = metric === "cm";
+    const sameTables = gold.tables && pred.tables ? JSON.stringify(gold.tables) === JSON.stringify(pred.tables) : null;
+    const head = `<tr><th>Thành phần</th><th>SQL tham chiếu</th><th>SQL sinh ra</th>${cm ? '<th class="num">Đang hoạt động</th><th class="num">F1</th>' : '<th class="num">Khớp</th>'}</tr>`;
+    const compRows = rows.map(row => {
+      const active = row.gold_total || row.pred_total;
+      const cells = cm ? `<td class="num">${row.match == null ? "—" : active ? "có" : '<span class="na">không</span>'}</td><td class="num">${row.match == null ? "—" : active ? (row.match ? '<span class="own pass">1</span>' : '<span class="own fail">0</span>') : '<span class="na">bỏ qua</span>'}</td>` : `<td class="num">${row.match == null ? "—" : row.match ? passMark : failMark}</td>`;
+      return `<tr class="${row.match === false && (!cm || active) ? "miss" : ""}${cm && row.match != null && !active ? " idle" : ""}"><td>${safe(emComponentNames[row.key] || row.key)}${cm && row.key === "and/or" ? "<small>Spider luôn tính thành phần này là đang hoạt động</small>" : ""}</td><td>${itemList(gold.components?.[row.key])}</td><td>${itemList(pred.components?.[row.key])}</td>${cells}</tr>`;
+    }).join("");
+    const tableRow = cm ? "" : `<tr class="${sameTables === false ? "miss" : ""}"><td>Tập bảng trong FROM<small>chỉ kiểm khi mọi thành phần đã khớp</small></td><td>${itemList(gold.tables)}</td><td>${itemList(pred.tables)}</td><td class="num">${sameTables == null ? "—" : sameTables ? passMark : failMark}</td></tr>`;
+    const activeRows = rows.filter(row => row.gold_total || row.pred_total), matched = activeRows.filter(row => row.match);
+    const cmLine = cm && data.comparison.length ? `<p>CM = ${number(matched.length)} thành phần khớp / ${number(activeRows.length)} thành phần đang hoạt động = <b>${activeRows.length ? score("cm", matched.length / activeRows.length) : score("cm", 1)}</b>.</p>` : "";
+    return `${sqlPair("Bước 1. Hai câu SQL được so", data.gold_sql, data.pred_sql)}
+      <div class="em-step"><p class="em-step-title">Bước 2. Đổi tên bảng/cột tiếng Việt thành mã</p><p class="tiny-note">Bộ phân tích Spider chỉ đọc được tên không dấu, không khoảng trắng, nên mỗi tên bảng/cột trong schema được thay bằng mã <code>u0, u1, …</code> (hàm <code>_rewrite</code>); alias như <code>t1</code>, <code>k</code> được giữ, chuỗi hằng không bị đổi.</p><div class="em-pair"><div><div class="sql-block"><pre>${safe(gold.canonical_sql || "—")}</pre></div></div><div><div class="sql-block"><pre>${safe(pred.canonical_sql || "—")}</pre></div></div></div><p class="em-legend">${legend}</p></div>
+      <div class="em-step"><p class="em-step-title">Bước 3. Tách thành cây cấu trúc bằng Spider <code>process_sql.get_sql</code></p><p class="tiny-note">Dùng bộ phân tích gốc của benchmark Spider (đặt trong <code>text2sql_demo/experiment/vendor/spider</code>). Sau khi tách: giá trị hằng bị bỏ (hiện là <code>?</code>), alias được quy về tên bảng, và các cột nối với nhau qua khóa ngoại được quy về một cột đại diện — nên một cột có thể hiện dưới tên bảng khác với trong SQL.</p>${errors}</div>
+      <div class="em-step"><p class="em-step-title">Bước 4. ${cm ? "Chấm F1 từng thành phần đang hoạt động" : "So từng thành phần (dạng tập, không xét thứ tự)"}</p><table class="em-components"><thead>${head}</thead><tbody>${compRows}${tableRow}</tbody></table>${cmLine}</div>`;
+  }
+  function resultTable(view, title) {
+    if (!view) return `<div><p class="detail-label">${title}</p><p class="na">Không chạy.</p></div>`;
+    const rows = view.rows.map(row => `<tr>${row.map(cell => `<td>${safe(cell === null ? "NULL" : cell)}</td>`).join("")}</tr>`).join("");
+    return `<div><p class="detail-label">${title} <span class="muted">· ${number(view.row_count)} dòng × ${number(view.columns.length)} cột · ${duration(view.duration_ms)}</span></p>${view.error ? `<p class="result-error">${safe(view.error)}</p>` : ""}<div class="result-preview"><table><thead><tr>${view.columns.map(c => `<th>${safe(c)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>${view.row_count > view.rows.length ? `<p class="tiny-note">Chỉ hiện ${number(view.rows.length)} dòng đầu.</p>` : ""}</div></div>`;
+  }
+  function renderExecution(data, metric) {
+    const pred = data.pred, gold = data.gold;
+    const steps = [];
+    if (gold && pred) {
+      let stop = false;
+      const step = (label, detail, ok) => {
+        const shown = stop ? null : ok;
+        steps.push(`<tr class="${shown === false ? "miss" : ""}"><td>${label}</td><td>${detail}</td><td class="num">${shown == null ? '<span class="na">không xét</span>' : shown ? passMark : failMark}</td></tr>`);
+        if (ok === false) stop = true;
+      };
+      step("SQL sinh ra chạy trọn vẹn", pred.complete ? "chạy xong, lấy đủ kết quả" : safe(pred.error || pred.status), pred.complete);
+      step("Số cột", `${number(gold.columns.length)} (tham chiếu) và ${number(pred.columns.length)} (sinh ra)`, gold.columns.length === pred.columns.length);
+      step("Số dòng", `${number(gold.row_count)} và ${number(pred.row_count)}`, gold.row_count === pred.row_count);
+      step("Giá trị", data.ordered ? "SQL tham chiếu có ORDER BY ngoài cùng → so đúng thứ tự dòng; cho phép đổi thứ tự cột" : "Không có ORDER BY ngoài cùng → so như đa tập (không xét thứ tự dòng); cho phép đổi thứ tự cột", data.verdict === "match" || data.verdict === "match_permuted");
+    }
+    const verdictText = { match: "Hai kết quả giống nhau → EX = 1.", match_permuted: "Hai kết quả giống nhau sau khi đổi thứ tự cột → EX = 1.", column_count: "Khác số cột → EX = 0.", row_count: "Khác số dòng → EX = 0.", values: "Cùng kích thước nhưng khác giá trị → EX = 0.", pred_error: "SQL sinh ra chạy lỗi → EX = 0.", pred_bounded: "SQL sinh ra vượt giới hạn thời gian/kích thước → EX = 0." }[data.verdict];
+    const vesNote = metric === "ves" ? '<p class="tiny-note">VES dùng chính phép so khớp này (EX). Thời gian ở đây chỉ là một lần chạy lại để minh họa; điểm VES dùng các cặp chạy đã đo lúc benchmark, xem dòng kết luận bên dưới.</p>' : "";
+    return `${sqlPair("Bước 1. Hai câu SQL được chạy", data.gold_sql, data.pred_sql)}
+      <div class="em-step"><p class="em-step-title">Bước 2. Chạy cả hai trên database <code>${safe(data.db_id)}</code> (chỉ đọc, lấy toàn bộ kết quả)</p>${data.available ? "" : `<p class="tiny-note">Không chấm được: ${safe(reasonText(data.reason))}.</p>`}<div class="em-pair">${resultTable(gold, "Kết quả SQL tham chiếu")}${resultTable(pred, "Kết quả SQL sinh ra")}</div></div>
+      ${data.available ? `<div class="em-step"><p class="em-step-title">Bước 3. So hai kết quả (dừng ở bước đầu tiên không khớp)</p><table class="em-components"><thead><tr><th>Kiểm tra</th><th>Chi tiết</th><th class="num">Đạt</th></tr></thead><tbody>${steps.join("")}</tbody></table>${verdictText ? `<p>Lần chạy lại này: <b>${verdictText}</b></p>` : ""}${vesNote}</div>` : ""}`;
+  }
+  function renderTestSuite(data) {
+    if (!data.available) return `${sqlPair("Hai câu SQL được chạy", data.gold_sql, data.pred_sql)}<p class="tiny-note">Không chấm TS được: ${safe(reasonText(data.reason))}.</p>`;
+    const matched = data.states.filter(s => s.match).length;
+    const preview = rows => safe(rows.map(row => row.join(", ")).join(" | ") || "(rỗng)");
+    const why = { column_count: "khác số cột", row_count: "khác số dòng", values: "khác giá trị", pred_error: "SQL lỗi", pred_bounded: "vượt giới hạn" };
+    const rows = data.states.map((s, i) => `<tr class="${s.match ? "" : "miss"}"><td>${i + 1}. <code>${safe(s.name)}</code></td><td class="num" title="${preview(s.gold_preview)}">${number(s.gold_rows)}</td><td class="num" title="${preview(s.pred_preview)}">${number(s.pred_rows)}</td><td>${s.match ? passMark : `${failMark} <small>${safe(why[s.verdict] || s.verdict)}</small>`}</td></tr>`).join("");
+    return `${sqlPair("Bước 1. Hai câu SQL được chạy", data.gold_sql, data.pred_sql)}
+      <div class="em-step"><p class="em-step-title">Bước 2. Chạy trên ${number(data.states.length)} phiên bản database của <code>${safe(data.db_id)}</code> và so như EX ở từng phiên bản</p><p class="tiny-note">Mỗi phiên bản có cùng schema nhưng dữ liệu khác. Di chuột vào số dòng để xem vài dòng đầu của kết quả.</p><div class="result-preview tall"><table class="em-components"><thead><tr><th>Phiên bản database</th><th class="num">Dòng (tham chiếu)</th><th class="num">Dòng (sinh ra)</th><th>Khớp</th></tr></thead><tbody>${rows}</tbody></table></div><p>${number(matched)}/${number(data.states.length)} phiên bản khớp → lần chạy lại này: <b>TS = ${data.ts}</b>.</p></div>`;
+  }
+  async function loadMetricDetail() {
+    const host = $("#metric-detail");
+    if (!host?.dataset.key) return;
+    const key = host.dataset.key;
+    const [metric, sampleId, model, preset] = key.split("|");
+    const record = logState.data?.groups.questions.find(q => q.sample_id === sampleId)?.records.find(r => r.model_id === model && r.preset_id === preset);
+    if (!record?.sql) return;
+    const kind = metric === "em" || metric === "cm" ? "em" : metric === "ts" ? "ts" : "ex";
+    const cacheKey = `${kind}|${sampleId}|${model}|${preset}`;
+    try {
+      if (!explainCache.has(cacheKey)) explainCache.set(cacheKey, api("metric-explain", { sample_id: sampleId, sql: record.sql, metric: kind }));
+      const data = await explainCache.get(cacheKey);
+      if ($("#metric-detail")?.dataset.key !== key) return;
+      host.innerHTML = kind === "em" ? renderStructure(data, metric) : kind === "ts" ? renderTestSuite(data) : renderExecution(data, metric);
+    } catch (error) {
+      explainCache.delete(cacheKey);
+      if ($("#metric-detail")?.dataset.key !== key) return;
+      host.innerHTML = `<p class="detail-label">SQL sinh ra</p><div class="sql-block"><pre>${safe(record.sql)}</pre></div><p class="tiny-note">Không lấy được phân tích chi tiết: ${safe(error.message)}. Kết luận bên dưới dựa trên số liệu đã lưu trong log.</p>`;
+    }
+  }
+  function openMetricDialog(metric) {
+    const model = $("#prompt-model").value, preset = promptRow()?.preset_id;
+    if (!logState.data || !preset) return;
+    logState.dialog = { metric, model, preset };
+    const dialog = $("#metric-dialog");
+    if (!dialog.open) dialog.showModal();
+    renderMetricDialog();
+  }
+  function metricNumber(value) { return value === true ? 1 : value === false ? 0 : value; }
+  function renderLogChart(metric, steps) {
+    const { groups } = logState.data;
+    const preset = logState.chartPreset;
+    $("#log-chart-presets").innerHTML = groups.presets.map(id => `<button type="button" data-preset="${safe(id)}" aria-pressed="${id === preset}" title="${safe(presetLabel(id))}">${safe(id.toUpperCase())}</button>`).join("");
+    $("#log-chart-caption").innerHTML = `Hình A. ${metric.toUpperCase()} cộng dồn theo thứ tự câu, cấu hình ${safe(preset.toUpperCase())}<br><span class="caption-detail">Mỗi đường là một mô hình; vạch dọc là câu đang xem. Bấm vào biểu đồ để nhảy tới câu.</span>`;
+    const total = steps.length;
+    const W = 760, H = 260, L = 48, R = 16, T = 14, B = 34;
+    const values = steps.flatMap(step => groups.models.map(model => step[model][preset].value)).filter(numeric);
+    const maxY = metric === "ves" ? Math.max(1.2, ...values) * 1.05 : 1;
+    const x = i => L + (total === 1 ? (W - L - R) / 2 : (i / (total - 1)) * (W - L - R));
+    const y = v => T + (1 - v / maxY) * (H - T - B);
+    const ticks = metric === "ves" ? [0, maxY / 2, maxY].map(v => Math.round(v * 100) / 100) : [0, 0.25, 0.5, 0.75, 1];
+    const xTicks = [...new Set([1, Math.round(total / 4), Math.round(total / 2), Math.round(3 * total / 4), total].filter(v => v >= 1))];
+    const grid = ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${metric === "ves" ? v : `${Math.round(v * 100)}%`}</text>`).join("")
+      + xTicks.map(v => `<text x="${x(v - 1)}" y="${H - 12}" text-anchor="middle">${v}</text>`).join("");
+    const lines = groups.models.map((model, index) => {
+      let d = "", pen = false;
+      steps.forEach((step, i) => {
+        const v = step[model][preset].value;
+        if (!numeric(v)) { pen = false; return; }
+        d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+        pen = true;
+      });
+      const current = steps[logState.k - 1][model][preset].value;
+      const color = seriesColors[index % seriesColors.length];
+      return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>${numeric(current) ? `<circle cx="${x(logState.k - 1)}" cy="${y(current)}" r="4" fill="${color}" stroke="#fff" stroke-width="1.5"><title>${safe(modelLabel(model))}: ${score(metric, current)}</title></circle>` : ""}`;
+    }).join("");
+    const marker = `<line x1="${x(logState.k - 1)}" x2="${x(logState.k - 1)}" y1="${T}" y2="${H - B}" class="marker"/>`;
+    const legend = groups.models.map((model, index) => {
+      const v = steps[logState.k - 1][model][preset].value;
+      return `<span class="legend-item"><svg class="swatch" viewBox="0 0 14 4" aria-hidden="true"><rect width="14" height="4" rx="2" fill="${seriesColors[index % seriesColors.length]}"/></svg>${safe(modelLabel(model))} <b>${v == null ? "N/A" : score(metric, v)}</b></span>`;
+    }).join("");
+    $("#log-chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${safe(metric.toUpperCase())} cộng dồn theo câu">${grid}${marker}${lines}<text x="${(L + W - R) / 2}" y="${H}" text-anchor="middle" class="axis-title">Số câu đã tính</text></svg><div class="chart-legend">${legend}</div>`;
+    const svg = $("#log-chart svg");
+    svg.addEventListener("click", event => {
+      const box = svg.getBoundingClientRect();
+      const px = (event.clientX - box.left) / box.width * W;
+      const i = total === 1 ? 0 : Math.round((px - L) / (W - L - R) * (total - 1));
+      setLogK(i + 1);
+    });
+  }
+  function renderLogQuestions() {
+    const { groups } = logState.data;
+    const shown = RunLog.filterQuestions(groups.questions, { difficulty: $("#log-difficulty").value, onlyProblems: $("#log-problems").checked });
+    $("#log-question-count").textContent = `(${number(shown.length)}/${number(groups.questions.length)} câu)`;
+    const current = groups.questions[logState.k - 1]?.sample_id;
+    if (!shown.length) { $("#log-questions").innerHTML = '<p class="empty-line">Không có câu phù hợp bộ lọc.</p>'; return; }
+    const header = `<div class="ex-grid-head">${groups.presets.map(p => `<span title="${safe(presetLabel(p))}">${safe(p.toUpperCase())}</span>`).join("")}</div>`;
+    $("#log-questions").innerHTML = `<table><thead><tr><th scope="col">#</th><th scope="col">Câu hỏi</th><th scope="col">${header}</th><th scope="col" class="num">Sai/lỗi</th></tr></thead><tbody>${shown.map(q => {
+      const index = groups.questions.indexOf(q) + 1;
+      const grid = groups.models.map(model => `<div class="ex-grid-row"><span class="ex-grid-model">${safe(modelLabel(model))}</span>${groups.presets.map(preset => { const cell = q.cells[model][preset]; return `<span class="ex-cell ${cell}" title="${safe(modelLabel(model))} · ${safe(preset.toUpperCase())} · ${cellLabels[cell]}"></span>`; }).join("")}</div>`).join("");
+      return `<tr class="question-row${q.sample_id === current ? " current" : ""}" data-k="${index}" tabindex="0"><td class="num">${index}</td><td><span class="q-meta">${safe(q.sample_id)} · ${safe(q.db_id)} · ${safe(q.difficulty)}</span>${safe(q.question)}</td><td>${grid}</td><td class="num">${number(q.problems)}</td></tr>`;
+    }).join("")}</tbody></table>`;
+    const box = $("#log-questions"), row = $("tr.current", box);
+    if (row) {
+      const top = row.offsetTop - box.offsetTop - (box.firstElementChild?.tHead?.offsetHeight || 0);
+      if (top < box.scrollTop || row.offsetTop - box.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTop = Math.max(0, top - 8);
+    }
+  }
+  async function openLogView(id) {
+    showView("log");
+    window.scrollTo(0, 0);
+    await loadLogRuns(id);
+    if (id && id !== logState.data?.id) await openLog(id);
+  }
   async function initialize() {
     try { state.info = await api("info"); renderInfo(); await loadSamples(); }
     catch (error) {
@@ -682,9 +1112,33 @@
     if (linkedRun) pollJob(linkedRun[1]);
   }
   $$(".nav-tab").forEach(button => button.addEventListener("click", () => {
+    if (button.dataset.view === "log") { openLogView(logState.data?.id); return; }
     showView(button.dataset.view);
     if (button.dataset.view === "benchmark") loadRuns();
   }));
+  $("#log-run").addEventListener("change", () => openLog($("#log-run").value));
+  $("#log-k").addEventListener("input", () => setLogK(Number($("#log-k").value)));
+  $("#log-prev").addEventListener("click", () => setLogK(logState.k - 1));
+  $("#log-next").addEventListener("click", () => setLogK(logState.k + 1));
+  $("#log-metric").addEventListener("change", renderLog);
+  $("#log-prompt").addEventListener("click", event => { const card = event.target.closest("[data-explain]"); if (card) openMetricDialog(card.dataset.explain); });
+  $("#metric-dialog-close").addEventListener("click", () => $("#metric-dialog").close());
+  $("#metric-dialog").addEventListener("click", event => {
+    if (event.target === $("#metric-dialog")) { $("#metric-dialog").close(); return; }
+    const chip = event.target.closest(".em-chip"); if (chip) setLogK(Number(chip.dataset.k));
+    const tab = event.target.closest("#metric-tabs button[data-metric]"); if (tab && logState.dialog) { logState.dialog.metric = tab.dataset.metric; renderMetricDialog(); }
+  });
+  $("#log-difficulty").addEventListener("change", renderLogQuestions);
+  $("#log-problems").addEventListener("change", renderLogQuestions);
+  $("#log-chart-presets").addEventListener("click", event => { const button = event.target.closest("button[data-preset]"); if (!button) return; logState.chartPreset = button.dataset.preset; renderLogChart(logMetric(), logSteps(logMetric())); });
+  $("#log-questions").addEventListener("click", event => { const row = event.target.closest("tr.question-row"); if (row) setLogK(Number(row.dataset.k)); });
+  $("#log-questions").addEventListener("keydown", event => { const row = event.target.closest("tr.question-row"); if (row && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setLogK(Number(row.dataset.k)); } });
+  document.addEventListener("keydown", event => {
+    if ($("#view-log").hidden || !logState.data || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.target.closest("input, select, textarea, [contenteditable]")) return;
+    if (event.key === "ArrowLeft") { event.preventDefault(); setLogK(logState.k - 1); }
+    else if (event.key === "ArrowRight") { event.preventDefault(); setLogK(logState.k + 1); }
+  });
   $$("[data-source]").forEach(button => button.addEventListener("click", () => {
     state.source = button.dataset.source;
     $$("[data-source]").forEach(tab => { tab.classList.toggle("active", tab === button); tab.setAttribute("aria-pressed", String(tab === button)); });
@@ -720,6 +1174,7 @@
       loadRuns(); if (linked && state.info) { state.job={id:linked[1]}; pollJob(linked[1]); }
     } else if (hash === "#method") showView("method");
     else if (hash === "#experiment") showView("compare");
+    else if (/^#log(?:\/[a-f0-9]{32})?$/.test(hash)) openLogView(hash.slice(5) || logState.data?.id);
   });
   $("#compare-mode").addEventListener("change",updateButtons);
   $("#prompt-preview-button").addEventListener("click",previewPrompts);
@@ -737,5 +1192,7 @@
     const reportHash = location.hash; showView("benchmark"); history.replaceState(null,"",reportHash);
   }
   else if (location.hash === "#method") showView("method");
-  initialize();
+  const linkedLog = location.hash.match(/^#log(?:\/([a-f0-9]{32}))?$/);
+  if (linkedLog) showView("log");
+  initialize().then(() => { if (linkedLog) openLogView(linkedLog[1]); });
 })();

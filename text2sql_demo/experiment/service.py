@@ -9,6 +9,7 @@ from pathlib import Path
 from .backends import BackendRegistry,load_local_env
 from .benchmark import BenchmarkManager
 from .dataset import DatasetStore
+from .evaluation import explain_structural,explain_execution,explain_test_suite
 from .pipeline import run_experiment,validate_options,preview_prompt
 from .training import training_status
 
@@ -107,6 +108,25 @@ class ExperimentService:
             chosen=[p for p in self.config['presets'] if p['id'] in ('p0','p1','p2','p3','p4')]
             return {'sample':{k:sample[k] for k in ('id','question','db_id','split')},
                     'results':[{'preset_id':p['id'],'label':p['label'],**preview_prompt(self.store,sample,{k:p[k] for k in ('c1','c2','c3','c4')})} for p in chosen]},200
+        if route=='/api/experiment/metric-explain':
+            metric=payload.get('metric','em')
+            if metric not in ('em','cm','ex','ts','ves'):
+                raise ValueError('Chỉ số phải là em, cm, ex, ts hoặc ves.')
+            sql=payload.get('sql')
+            if not isinstance(sql,str) or len(sql)>20000:
+                raise ValueError('SQL phải là chuỗi tối đa 20.000 ký tự.')
+            sample=self.store.get_sample(payload.get('sample_id',''))
+            if sample['split']=='test':
+                raise ValueError('Mẫu test được khóa cho đánh giá cuối; không hiện SQL tham chiếu.')
+            if not sample.get('gold_sql'):
+                raise ValueError('Mẫu này không có SQL tham chiếu.')
+            if metric in ('em','cm'):
+                result={'parser':'Spider process_sql.get_sql (vendor/spider)',**explain_structural(sql,sample['gold_sql'],self.store.schema(sample['db_id']))}
+            elif metric=='ts':
+                result=explain_test_suite(sql,sample,self.store)
+            else:
+                result=explain_execution(sql,sample,self.store)
+            return {'metric':metric,'sample_id':sample['id'],'db_id':sample['db_id'],'gold_sql':sample['gold_sql'],'pred_sql':sql,**result},200
         if route=='/api/experiment/compare':
             options=validate_options(payload.get('options',{}))
             if not self.store.summary()['ready']:

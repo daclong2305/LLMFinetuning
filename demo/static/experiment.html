@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,600&display=swap">
   <link rel="stylesheet" href="/experiment.css">
+  <script defer src="/run-log.js"></script>
   <script defer src="/experiment.js"></script>
 </head>
 <body>
@@ -18,6 +19,7 @@
     <nav class="main-nav" aria-label="Điều hướng">
       <button class="nav-tab active" data-view="compare" aria-pressed="true">So sánh</button>
       <button class="nav-tab" data-view="benchmark" aria-pressed="false">Báo cáo</button>
+      <button class="nav-tab" data-view="log" aria-pressed="false">Duyệt log</button>
       <button class="nav-tab" data-view="method" aria-pressed="false">Phương pháp</button>
     </nav>
     <details id="system-status" class="system-status" data-state="checking">
@@ -196,6 +198,66 @@
         </div>
       </div>
     </section>
+
+    <section id="view-log" class="view" hidden aria-label="Duyệt log">
+      <div class="log-page">
+        <div class="log-head">
+          <div class="log-run-picker">
+            <label class="field-label" for="log-run">Lần chạy</label>
+            <select id="log-run"><option value="">Đang tải…</option></select>
+          </div>
+          <div id="log-status" class="inline-status" role="status"></div>
+        </div>
+
+        <div id="log-body" hidden>
+          <div class="log-stepper" aria-label="Chọn câu">
+            <button id="log-prev" class="button subtle small" type="button" aria-label="Câu trước">◀</button>
+            <input id="log-k" type="range" min="1" max="1" value="1" aria-label="Số câu đã cộng dồn">
+            <button id="log-next" class="button subtle small" type="button" aria-label="Câu sau">▶</button>
+            <span id="log-position" class="log-position"></span>
+          </div>
+          <p id="log-current" class="log-current"></p>
+          <div id="log-prompt" class="log-detail"></div>
+
+          <section class="results-section" aria-label="Biểu đồ cộng dồn">
+            <div class="caption-row">
+              <p id="log-chart-caption" class="caption"></p>
+              <div class="log-chart-controls">
+                <label class="log-metric">Chỉ số <select id="log-metric"><option value="em">EM</option><option value="cm">CM</option><option value="ex" selected>EX</option><option value="ts">TS</option><option value="ves">VES</option></select></label>
+                <div id="log-chart-presets" class="chips" role="group" aria-label="Cấu hình trên biểu đồ"></div>
+              </div>
+            </div>
+            <div id="log-chart" class="log-chart"></div>
+          </section>
+
+          <section class="results-section" aria-label="Danh sách câu">
+            <div class="caption-row">
+              <p class="caption">Danh sách câu hỏi <span id="log-question-count" class="caption-detail"></span></p>
+              <div class="log-filters">
+                <select id="log-difficulty" aria-label="Lọc theo độ khó"><option value="">Mọi độ khó</option></select>
+                <label class="check"><input id="log-problems" type="checkbox"> Chỉ câu có sai/lỗi</label>
+              </div>
+            </div>
+            <div id="log-questions" class="log-questions"></div>
+            <p class="table-note">Ô theo EX: <span class="ex-cell pass"></span> đúng · <span class="ex-cell fail"></span> sai · <span class="ex-cell error"></span> lỗi pipeline · <span class="ex-cell na"></span> N/A · <span class="ex-cell pending"></span> chưa chạy. Bấm một câu để xem chi tiết.</p>
+          </section>
+
+          <section class="log-detail-section" aria-label="Chi tiết câu">
+            <div class="section-heading"><h2>Kết quả từng mô hình ở câu đang xem</h2></div>
+            <div id="log-detail" class="log-detail"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <dialog id="metric-dialog" class="metric-dialog" aria-labelledby="metric-dialog-title">
+      <div class="metric-dialog-head">
+        <h2 id="metric-dialog-title">Cách tính EM</h2>
+        <div id="metric-tabs" class="chips metric-tabs" role="group" aria-label="Chọn chỉ số"></div>
+        <button id="metric-dialog-close" class="link-button" type="button" aria-label="Đóng">Đóng ✕</button>
+      </div>
+      <div id="metric-dialog-body" class="metric-dialog-body"></div>
+    </dialog>
 
     <section id="view-method" class="view" hidden aria-label="Phương pháp">
       <article class="method">
