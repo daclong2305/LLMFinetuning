@@ -439,6 +439,175 @@ def _optional_metrics(result, sql, sample, store, schema, timeout_s):
     return result
 
 
+def _readable_structure(parsed, schema):
+    """Render a normalized Spider parse as the items each EM component compares."""
+    back = {token: name for name, token in _identifiers_original(schema).items()}
+
+    def name(token):
+        if token == '__all__':
+            return '*'
+        return '.'.join(back.get(part, part) for part in token.strip('_').split('.'))
+
+    def col(unit):
+        agg, column, distinct = unit
+        text = ('DISTINCT ' if distinct else '') + name(column)
+        return f'{parser.AGG_OPS[agg]}({text})' if agg else text
+
+    def val(unit):
+        op, left, right = unit
+        return col(left) if not op else f'{col(left)} {parser.UNIT_OPS[op]} {col(right)}'
+
+    def cond(unit, with_op=True):
+        negated, op, value_unit = unit[0], unit[1], unit[2]
+        if not with_op:
+            return val(value_unit)
+        return ('NOT ' if negated else '') + f'{val(value_unit)} {parser.WHERE_OPS[op]} ?'
+
+    select = parsed['select'][1]
+    where = parsed['where'][::2]
+    having = parsed['having'][::2]
+    order = [f"{parsed['orderBy'][0].upper()} {val(v)}" for v in parsed['orderBy'][1]] if parsed['orderBy'] else []
+    if parsed['limit'] is not None:
+        order.append('LIMIT')
+    tables = sorted(name(unit[1]) if unit[0] == 'table_unit' else '(truy vấn con)' for unit in parsed['from']['table_units'])
+    return {
+        'tables': tables,
+        'components': {
+            'select': [f'{parser.AGG_OPS[agg]}({val(v)})' if agg else val(v) for agg, v in select],
+            'select(no AGG)': [val(v) for _, v in select],
+            'where': [cond(c) for c in where],
+            'where(no OP)': [cond(c, False) for c in where],
+            'group(no Having)': [col(c) for c in parsed['groupBy']],
+            'group': [col(c) for c in parsed['groupBy']] + ['HAVING ' + cond(c) for c in having],
+            'order': order,
+            'and/or': [token.upper() for token in parsed['where'][1::2]],
+            'IUEN': [op.upper() for op in ('intersect', 'union', 'except') if parsed[op] is not None],
+            'keywords': sorted(spider.get_keywords(parsed)),
+        },
+    }
+
+
+def _identifiers_original(schema):
+    names = list(schema)
+    for table in schema.values():
+        names.extend(c['name'] for c in table['columns'])
+    tokens = _identifiers(schema)
+    return {name: tokens[name.casefold()] for name in dict.fromkeys(names) if name.casefold() in tokens}
+
+
+def explain_structural(pred_sql, gold_sql, schema):
+    """Expose how EM was decided: canonical SQL, parsed components, per-component match."""
+    sides = {}
+    parsed = {}
+    for side, sql in (('pred', pred_sql), ('gold', gold_sql)):
+        entry = {'sql': sql, 'canonical_sql': None, 'tokens': {}, 'tables': None, 'components': None, 'error': None}
+        try:
+            entry['canonical_sql'] = _normalize_inner_joins(_rewrite(sql, schema))
+            back = {token: name for name, token in _identifiers_original(schema).items()}
+            used = dict.fromkeys(re.findall(r'\bu\d+\b', entry['canonical_sql']))
+            entry['tokens'] = {token: back[token] for token in used if token in back}
+        except ValueError as exc:
+            entry['error'] = str(exc)
+        try:
+            parsed[side] = parse_structural(sql, schema)
+            entry.update(_readable_structure(parsed[side], schema))
+        except (AssertionError, ValueError, KeyError, IndexError, TypeError, RecursionError) as exc:
+            entry['error'] = str(exc) or type(exc).__name__
+        sides[side] = entry
+    result = {'pred': sides['pred'], 'gold': sides['gold'], 'em': None, 'comparison': []}
+    if 'pred' in parsed and 'gold' in parsed:
+        evaluator = spider.Evaluator()
+        result['em'] = int(evaluator.eval_exact_match(copy.deepcopy(parsed['pred']), copy.deepcopy(parsed['gold'])))
+        result['comparison'] = [{'key': key, 'gold_total': score['label_total'], 'pred_total': score['pred_total'], 'match': score['f1'] == 1}
+                                for key, score in evaluator.partial_scores.items()]
+    return result
+
+
+def _execution_view(execution, max_rows):
+    return {'columns': execution['columns'], 'rows': execution['rows'][:max_rows], 'row_count': len(execution['rows']),
+            'status': execution['status'], 'complete': execution['complete'], 'error': execution['error'],
+            'duration_ms': execution['duration_ms']}
+
+
+def _compare_verdict(predicted, expected, ordered):
+    """Same decision as EX scoring, plus which check decided it."""
+    if predicted['status'] in ('bounded', 'timeout'):
+        return 0, 'pred_bounded'
+    if not predicted['complete']:
+        return 0, 'pred_error'
+    if len(predicted['columns']) != len(expected['columns']):
+        return 0, 'column_count'
+    if len(predicted['rows']) != len(expected['rows']):
+        return 0, 'row_count'
+    if not _rows_match(predicted['rows'], expected['rows'], ordered):
+        return 0, 'values'
+    exact = predicted['rows'] == expected['rows'] if ordered else Counter(map(tuple, predicted['rows'])) == Counter(map(tuple, expected['rows']))
+    return 1, 'match' if exact else 'match_permuted'
+
+
+def explain_execution(sql, sample, store, timeout_s=5, max_rows=50):
+    """Re-run gold and predicted SQL on the scoring database to show how EX was decided."""
+    out = {'available': False, 'reason': None, 'ordered': top_level_ordered(sample.get('gold_sql')), 'gold': None, 'pred': None, 'ex': None, 'verdict': None}
+    schema = store.schema(sample['db_id'])
+    try:
+        path = store.database_path(sample['db_id'])
+    except (ValueError, OSError) as exc:
+        out['reason'] = str(exc)
+        return out
+    if path is None:
+        out['reason'] = 'Compatible data-filled SQLite database unavailable.'
+        return out
+    qualified, reason = _audit_database(path, schema, sample, store, timeout_s)
+    if not qualified:
+        out['reason'] = reason
+        return out
+    expected = execute_full_readonly(path, executable_sql(sample['gold_sql'], schema), timeout_s)
+    predicted = execute_full_readonly(path, executable_sql(sql, schema), timeout_s)
+    out.update(gold=_execution_view(expected, max_rows), pred=_execution_view(predicted, max_rows))
+    if not expected['complete']:
+        out['reason'] = 'Gold full execution unavailable: ' + str(expected['error'])
+        return out
+    out['available'] = True
+    out['ex'], out['verdict'] = _compare_verdict(predicted, expected, out['ordered'])
+    return out
+
+
+def explain_test_suite(sql, sample, store, timeout_s=5):
+    """Per-state EX on the test-suite databases; TS is 1 only when every state matches."""
+    out = {'available': False, 'reason': None, 'ordered': top_level_ordered(sample.get('gold_sql')), 'states': [], 'ts': None}
+    if not hasattr(store, 'test_suite_assets'):
+        out['reason'] = 'Validated test-suite manifest unavailable.'
+        return out
+    schema = store.schema(sample['db_id'])
+    try:
+        assets = store.test_suite_assets(sample['db_id'])
+        if not assets['available']:
+            out['reason'] = assets['reason']
+            return out
+        for entry in assets['files']:
+            valid, reason = _audit_database(entry['path'], schema, sample, store, timeout_s)
+            if not valid:
+                out['reason'] = 'Test-suite schema/data/gold audit failed: ' + str(reason)
+                return out
+        for entry in assets['files']:
+            expected = execute_full_readonly(entry['path'], executable_sql(sample['gold_sql'], schema), timeout_s)
+            predicted = execute_full_readonly(entry['path'], executable_sql(sql, schema), timeout_s)
+            if not expected['complete']:
+                out['reason'] = 'Test-suite target gold complete execution unavailable: ' + str(expected['error'])
+                return out
+            match, verdict = _compare_verdict(predicted, expected, out['ordered'])
+            out['states'].append({'name': Path(entry['path']).name, 'gold_rows': len(expected['rows']), 'pred_rows': len(predicted['rows']),
+                                  'pred_status': predicted['status'], 'match': bool(match), 'verdict': verdict,
+                                  'gold_preview': expected['rows'][:3], 'pred_preview': predicted['rows'][:3]})
+    except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
+        out['reason'] = 'Test-suite validation unavailable: ' + str(exc)
+        out['states'] = []
+        return out
+    out['available'] = True
+    out['ts'] = int(all(state['match'] for state in out['states']))
+    return out
+
+
 def evaluate_prediction(sql, sample, store, timeout_s=5):
     result = {k: None for k in ('em', 'cm', 'ex', 'ts', 'ves', 'syntax_valid', 'execution_success', 'sql_latency_ms', 'gold_valid')}
     result['cm_components'] = {}
